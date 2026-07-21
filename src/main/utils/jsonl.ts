@@ -14,9 +14,11 @@ import * as readline from 'readline';
 import { SessionContentFilter } from '../services/discovery/SessionContentFilter';
 import { LocalFileSystemProvider } from '../services/infrastructure/LocalFileSystemProvider';
 import {
+  type AttachmentEntry,
   type ChatHistoryEntry,
   type ContentBlock,
   EMPTY_METRICS,
+  type QueuedCommandAttachment,
   isConversationalEntry,
   isParsedUserChunkMessage,
   isTextContent,
@@ -107,6 +109,16 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
     return null;
   }
 
+  // Attachment entries carry out-of-band payloads. Most (hook output, diagnostics)
+  // are non-conversational, but a QUEUED user message — text the user typed while
+  // the assistant was mid-turn — is recorded ONLY as a `queued_command` attachment
+  // with origin.kind === 'human'; there is no `type:"user"` entry for it. Surface
+  // those as real user messages so they render as visible user turns in
+  // chronological position. All other attachments are skipped.
+  if (entry.type === 'attachment') {
+    return parseQueuedCommandAttachment(entry);
+  }
+
   const type = parseMessageType(entry.type);
   if (!type) {
     return null;
@@ -190,6 +202,66 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
     sourceToolAssistantUUID,
     toolUseResult,
     requestId,
+  };
+}
+
+/**
+ * Convert a `queued_command` attachment (a message the user typed mid-turn) into
+ * a synthetic user ParsedMessage.
+ *
+ * Only human-originated queued commands are real user input. Agent-generated
+ * queued_commands (e.g. `<task-notification>` payloads) carry a non-human origin
+ * and return null so they stay out of the conversation, exactly as before.
+ *
+ * The produced message has STRING content (the prompt) and isMeta=false, so it
+ * flows through the normal classification path (isParsedUserChunkMessage → user
+ * chunk) and renders as a "You" bubble in chronological position. The text is
+ * used verbatim — Claude Code stores the prompt without the terminal "❯ " marker,
+ * so no stripping is needed.
+ */
+function parseQueuedCommandAttachment(entry: AttachmentEntry): ParsedMessage | null {
+  if (!entry.uuid) {
+    return null;
+  }
+
+  const attachment = entry.attachment;
+  if (!attachment || attachment.type !== 'queued_command') {
+    return null;
+  }
+
+  const queued = attachment as QueuedCommandAttachment;
+  // Guard: only surface messages the human actually typed.
+  if (queued.origin?.kind !== 'human' || typeof queued.prompt !== 'string') {
+    return null;
+  }
+
+  const prompt = queued.prompt.trim();
+  if (prompt.length === 0) {
+    return null;
+  }
+
+  return {
+    uuid: entry.uuid,
+    parentUuid: entry.parentUuid ?? null,
+    type: 'user',
+    timestamp: entry.timestamp ? new Date(entry.timestamp) : new Date(),
+    role: 'user',
+    content: prompt,
+    usage: undefined,
+    model: undefined,
+    cwd: entry.cwd,
+    gitBranch: entry.gitBranch,
+    agentId: undefined,
+    isSidechain: entry.isSidechain ?? false,
+    isMeta: false,
+    userType: undefined,
+    isCompactSummary: false,
+    toolCalls: [],
+    toolResults: [],
+    sourceToolUseID: undefined,
+    sourceToolAssistantUUID: undefined,
+    toolUseResult: undefined,
+    requestId: undefined,
   };
 }
 
