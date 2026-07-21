@@ -21,13 +21,21 @@ import { TextItem } from './items/TextItem';
 import { ThinkingItem } from './items/ThinkingItem';
 import { MarkdownViewer } from './viewers/MarkdownViewer';
 
+import { displayItemFilterType } from './chatItemFilter';
+
 import type { AIGroupDisplayItem } from '@renderer/types/groups';
 import type { TriggerColor } from '@shared/constants/triggerColors';
 
 interface DisplayItemListProps {
   items: AIGroupDisplayItem[];
   onItemClick: (itemId: string) => void;
-  expandedItemIds: Set<string>;
+  /** Item IDs that are explicitly COLLAPSED. Default presentation is expanded. */
+  collapsedItemIds: Set<string>;
+  /**
+   * Filter-type strings that are hidden. Items of these types are skipped WITHOUT
+   * changing the iteration index, so item keys / collapse state stay stable.
+   */
+  hiddenFilterTypes?: ReadonlySet<string>;
   aiGroupId: string;
   /** Tool use ID to highlight for error deep linking */
   highlightToolUseId?: string;
@@ -64,13 +72,16 @@ function truncateText(text: string, maxLength: number): string {
 export const DisplayItemList = React.memo(function DisplayItemList({
   items,
   onItemClick,
-  expandedItemIds,
+  collapsedItemIds,
+  hiddenFilterTypes,
   aiGroupId,
   highlightToolUseId,
   highlightColor,
   notificationColorMap,
   registerToolRef,
 }: Readonly<DisplayItemListProps>): React.JSX.Element {
+  /** An item is expanded unless it's explicitly in the collapsed set. */
+  const isItemExpanded = (itemKey: string): boolean => !collapsedItemIds.has(itemKey);
   // Reply-link highlight: when hovering a reply badge, dim everything except the linked pair
   const [replyLinkToolId, setReplyLinkToolId] = useState<string | null>(null);
 
@@ -98,6 +109,11 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   return (
     <div className="space-y-2">
       {items.map((item, index) => {
+        // Filter: skip hidden types without disturbing `index` (keeps keys/collapse stable).
+        if (hiddenFilterTypes && hiddenFilterTypes.has(displayItemFilterType(item))) {
+          return null;
+        }
+
         let itemKey = '';
         let element: React.ReactNode = null;
 
@@ -119,7 +135,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 step={thinkingStep}
                 preview={truncateText(item.content, 150)}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
               />
             );
             break;
@@ -142,7 +158,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 step={textStep}
                 preview={truncateText(item.content, 150)}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
               />
             );
             break;
@@ -154,7 +170,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
               <LinkedToolItem
                 linkedTool={item.tool}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
                 isHighlighted={highlightToolUseId === item.tool.id}
                 highlightColor={highlightColor}
                 notificationDotColor={notificationColorMap?.get(item.tool.id)}
@@ -186,7 +202,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 step={subagentStep}
                 subagent={item.subagent}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
                 aiGroupId={aiGroupId}
                 highlightToolUseId={highlightToolUseId}
                 highlightColor={highlightColor}
@@ -203,7 +219,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
               <SlashItem
                 slash={item.slash}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
               />
             );
             break;
@@ -215,7 +231,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
               <TeammateMessageItem
                 teammateMessage={item.teammateMessage}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
                 onReplyHover={handleReplyHover}
               />
             );
@@ -233,7 +249,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 summary={truncateText(inputContent, 80)}
                 tokenCount={inputTokenCount}
                 onClick={() => onItemClick(itemKey)}
-                isExpanded={expandedItemIds.has(itemKey)}
+                isExpanded={isItemExpanded(itemKey)}
               >
                 <MarkdownViewer content={inputContent} copyable />
               </BaseItem>
@@ -244,7 +260,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           case 'compact_boundary': {
             itemKey = `compact-${index}`;
             const compactContent = item.content;
-            const compactExpanded = expandedItemIds.has(itemKey);
+            const compactExpanded = isItemExpanded(itemKey);
             element = (
               <div>
                 <button

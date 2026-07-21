@@ -35,7 +35,8 @@ interface UseTabUIReturn {
   isAIGroupExpanded: (aiGroupId: string) => boolean;
   toggleAIGroupExpansion: (aiGroupId: string) => void;
   expandAIGroup: (aiGroupId: string) => void;
-  getExpandedDisplayItemIds: (aiGroupId: string) => Set<string>;
+  /** COLLAPSED display item IDs for a group (default presentation is expanded). */
+  getCollapsedDisplayItemIds: (aiGroupId: string) => Set<string>;
   toggleDisplayItemExpansion: (aiGroupId: string, itemId: string) => void;
   expandDisplayItem: (aiGroupId: string, itemId: string) => void;
   isSubagentTraceExpanded: (subagentId: string) => boolean;
@@ -43,6 +44,10 @@ interface UseTabUIReturn {
   expandSubagentTrace: (subagentId: string) => void;
   isContextPanelVisible: boolean;
   setContextPanelVisible: (visible: boolean) => void;
+  /** Set of HIDDEN filter-type strings for this tab (empty = all shown). */
+  hiddenFilterTypes: Set<string>;
+  toggleFilterType: (filterType: string) => void;
+  setHiddenFilterTypes: (hidden: Set<string>) => void;
   selectedContextPhase: number | null;
   setSelectedContextPhase: (phase: number | null) => void;
   savedScrollTop: number | undefined;
@@ -82,6 +87,8 @@ export function useTabUI(): UseTabUIReturn {
     toggleSubagentTraceExpansionForTab,
     expandSubagentTraceForTab,
     setContextPanelVisibleForTab,
+    toggleFilterTypeForTab,
+    setHiddenFilterTypesForTab,
     setSelectedContextPhaseForTab,
     saveScrollPositionForTab,
     initTabUIState,
@@ -94,6 +101,8 @@ export function useTabUI(): UseTabUIReturn {
       toggleSubagentTraceExpansionForTab: s.toggleSubagentTraceExpansionForTab,
       expandSubagentTraceForTab: s.expandSubagentTraceForTab,
       setContextPanelVisibleForTab: s.setContextPanelVisibleForTab,
+      toggleFilterTypeForTab: s.toggleFilterTypeForTab,
+      setHiddenFilterTypesForTab: s.setHiddenFilterTypesForTab,
       setSelectedContextPhaseForTab: s.setSelectedContextPhaseForTab,
       saveScrollPositionForTab: s.saveScrollPositionForTab,
       initTabUIState: s.initTabUIState,
@@ -104,10 +113,11 @@ export function useTabUI(): UseTabUIReturn {
   // Derived state from tabState (reactive!)
   // ==========================================================================
 
-  // AI Group expansion - check directly from tabState
+  // AI Group expansion - default presentation is expanded; a group is only collapsed
+  // when explicitly present in the collapsed set.
   const isAIGroupExpanded = useCallback(
     (aiGroupId: string): boolean => {
-      return tabState?.expandedAIGroupIds.has(aiGroupId) ?? false;
+      return !(tabState?.collapsedAIGroupIds.has(aiGroupId) ?? false);
     },
     [tabState]
   );
@@ -128,10 +138,10 @@ export function useTabUI(): UseTabUIReturn {
     [tabId, expandAIGroupForTab]
   );
 
-  // Display item expansion - derive from tabState
-  const getExpandedDisplayItemIds = useCallback(
+  // Display item COLLAPSED ids - derive from tabState (default presentation is expanded)
+  const getCollapsedDisplayItemIds = useCallback(
     (aiGroupId: string): Set<string> => {
-      return tabState?.expandedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
+      return tabState?.collapsedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
     },
     [tabState]
   );
@@ -187,6 +197,28 @@ export function useTabUI(): UseTabUIReturn {
     [tabId, setContextPanelVisibleForTab]
   );
 
+  // Per-type filter - derive from tabState (empty = all shown)
+  const hiddenFilterTypes = useMemo(
+    () => tabState?.hiddenFilterTypes ?? new Set<string>(),
+    [tabState]
+  );
+
+  const toggleFilterType = useCallback(
+    (filterType: string): void => {
+      if (!tabId) return;
+      toggleFilterTypeForTab(tabId, filterType);
+    },
+    [tabId, toggleFilterTypeForTab]
+  );
+
+  const setHiddenFilterTypes = useCallback(
+    (hidden: Set<string>): void => {
+      if (!tabId) return;
+      setHiddenFilterTypesForTab(tabId, hidden);
+    },
+    [tabId, setHiddenFilterTypesForTab]
+  );
+
   // Context phase selection - derive from tabState
   const selectedContextPhase = tabState?.selectedContextPhase ?? null;
 
@@ -224,8 +256,8 @@ export function useTabUI(): UseTabUIReturn {
     toggleAIGroupExpansion,
     expandAIGroup,
 
-    // Display item expansion
-    getExpandedDisplayItemIds,
+    // Display item expansion (collapsed-tracking; default expanded)
+    getCollapsedDisplayItemIds,
     toggleDisplayItemExpansion,
     expandDisplayItem,
 
@@ -237,6 +269,11 @@ export function useTabUI(): UseTabUIReturn {
     // Context panel
     isContextPanelVisible,
     setContextPanelVisible,
+
+    // Per-type filter
+    hiddenFilterTypes,
+    toggleFilterType,
+    setHiddenFilterTypes,
 
     // Context phase selection
     selectedContextPhase,

@@ -13,6 +13,7 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { TokenUsageDisplay } from '../common/TokenUsageDisplay';
 
+import { lastOutputFilterType } from './chatItemFilter';
 import { ContextBadge } from './ContextBadge';
 import { DisplayItemList } from './DisplayItemList';
 import { LastOutputDisplay } from './LastOutputDisplay';
@@ -131,9 +132,10 @@ const AIChatGroupInner = ({
     tabId,
     isAIGroupExpanded: isAIGroupExpandedForTab,
     toggleAIGroupExpansion,
-    getExpandedDisplayItemIds,
+    getCollapsedDisplayItemIds,
     toggleDisplayItemExpansion,
     expandDisplayItem,
+    hiddenFilterTypes,
   } = useTabUI();
 
   // Per-tab session data, falling back to global state
@@ -296,11 +298,19 @@ const AIChatGroupInner = ({
     [enhanced.displayItems]
   );
 
-  // Get expanded item IDs for this AI group (per-tab)
-  const expandedItemIds = useMemo(
-    () => getExpandedDisplayItemIds(aiGroup.id),
-    [getExpandedDisplayItemIds, aiGroup.id]
+  // Get collapsed item IDs for this AI group (per-tab; default presentation is expanded)
+  const collapsedItemIds = useMemo(
+    () => getCollapsedDisplayItemIds(aiGroup.id),
+    [getCollapsedDisplayItemIds, aiGroup.id]
   );
+
+  // Whether the always-visible last output should be hidden by the per-type filter.
+  // Interruptions / ongoing state (null type) are never hidden.
+  const lastOutputHidden = useMemo(() => {
+    if (hiddenFilterTypes.size === 0) return false;
+    const t = lastOutputFilterType(enhanced.lastOutput);
+    return t !== null && hiddenFilterTypes.has(t);
+  }, [hiddenFilterTypes, enhanced.lastOutput]);
 
   // Track which highlightToolUseId we've already processed to prevent infinite loops
   const processedHighlightRef = useRef<string | null>(null);
@@ -520,7 +530,8 @@ const AIChatGroupInner = ({
           <DisplayItemList
             items={enhanced.displayItems}
             onItemClick={handleItemClick}
-            expandedItemIds={expandedItemIds}
+            collapsedItemIds={collapsedItemIds}
+            hiddenFilterTypes={hiddenFilterTypes}
             aiGroupId={aiGroup.id}
             highlightToolUseId={highlightToolUseId}
             highlightColor={highlightColor}
@@ -530,7 +541,8 @@ const AIChatGroupInner = ({
         </div>
       )}
 
-      {/* Always-visible Output */}
+      {/* Always-visible Output (hidden when its type is filtered out) */}
+      {!lastOutputHidden && (
       <div>
         <LastOutputDisplay
           lastOutput={enhanced.lastOutput}
@@ -542,6 +554,7 @@ const AIChatGroupInner = ({
           ongoingOutputTokens={aiGroup.tokens.output}
         />
       </div>
+      )}
     </div>
   );
 };
