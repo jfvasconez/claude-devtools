@@ -109,6 +109,7 @@ export class ProjectScanner {
    */
   private terminalStateCache: {
     map: Map<string, { state: string; ts: number; cwd?: string }>;
+    statuslineMap: Map<string, NonNullable<Session['statusline']>>;
     timestamp: number;
   } | null = null;
 
@@ -771,10 +772,11 @@ export class ProjectScanner {
     }
 
     // Check for subagents, load task list data, and read terminal state in parallel
-    const [hasSubagents, todoData, terminalState] = await Promise.all([
+    const [hasSubagents, todoData, terminalState, statusline] = await Promise.all([
       this.subagentLocator.hasSubagents(projectId, sessionId),
       this.loadTodoData(sessionId),
       this.getTerminalStateForSession(sessionId),
+      this.getStatuslineForSession(sessionId),
     ]);
     const metadataLevel: SessionMetadataLevel = 'deep';
     const firstMessageTimestampMs = this.parseTimestampMs(metadata.firstUserMessage?.timestamp);
@@ -812,6 +814,7 @@ export class ProjectScanner {
       compactionCount: metadata.compactionCount,
       phaseBreakdown: metadata.phaseBreakdown,
       terminalState,
+      statusline,
     };
   }
 
@@ -874,7 +877,10 @@ export class ProjectScanner {
     // raw parse result. Best-effort — 'waiting' still works when the parse succeeded.
     const status = computeSessionStatus(metadata.isOngoing, metadata);
 
-    const terminalState = await this.getTerminalStateForSession(sessionId);
+    const [terminalState, statusline] = await Promise.all([
+      this.getTerminalStateForSession(sessionId),
+      this.getStatuslineForSession(sessionId),
+    ]);
 
     return {
       id: sessionId,
@@ -889,6 +895,7 @@ export class ProjectScanner {
       metadataLevel,
       status,
       terminalState,
+      statusline,
     };
   }
 
@@ -1018,20 +1025,55 @@ export class ProjectScanner {
    * Fully defensive: a missing dir, unreadable file, or unparseable JSON yields an
    * empty/partial map — this never throws.
    */
-  private async loadTerminalStates(): Promise<
-    Map<string, { state: string; ts: number; cwd?: string }>
-  > {
+  private async loadTerminalStates(): Promise<{
+    map: Map<string, { state: string; ts: number; cwd?: string }>;
+    statuslineMap: Map<string, NonNullable<Session['statusline']>>;
+  }> {
     const now = Date.now();
     if (this.terminalStateCache && now - this.terminalStateCache.timestamp < TERMINAL_STATE_CACHE_TTL_MS) {
-      return this.terminalStateCache.map;
+      return this.terminalStateCache;
     }
 
     const map = new Map<string, { state: string; ts: number; cwd?: string }>();
+    const statuslineMap = new Map<string, NonNullable<Session['statusline']>>();
     try {
       const stateDir = path.join(path.dirname(this.projectsDir), 'devtools-state');
       const entries = await this.fsProvider.readdir(stateDir);
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+
+        // Statusline snapshot: `<sessionId>.statusline.json` (checked first so it
+        // isn't mistaken for a terminal-state file, which shares the .json suffix).
+        if (entry.name.endsWith('.statusline.json')) {
+          const sessionId = entry.name.replace(/\.statusline\.json$/, '');
+          try {
+            const content = await this.fsProvider.readFile(path.join(stateDir, entry.name));
+            const parsed = JSON.parse(content) as Record<string, unknown>;
+            if (parsed && typeof parsed === 'object') {
+              const str = (v: unknown): string | undefined =>
+                typeof v === 'string' ? v : undefined;
+              const num = (v: unknown): number | null | undefined =>
+                typeof v === 'number' ? v : v === null ? null : undefined;
+              statuslineMap.set(sessionId, {
+                model: str(parsed.model),
+                dir: str(parsed.dir),
+                branch: str(parsed.branch),
+                ahead: str(parsed.ahead),
+                behind: str(parsed.behind),
+                context_pct: num(parsed.context_pct),
+                weekly_pct: num(parsed.weekly_pct),
+                weekly_reset: str(parsed.weekly_reset),
+                session_pct: num(parsed.session_pct),
+                session_reset: str(parsed.session_reset),
+                ts: typeof parsed.ts === 'number' ? parsed.ts : undefined,
+              });
+            }
+          } catch {
+            // Ignore unreadable/unparseable statusline files.
+          }
+          continue;
+        }
+
         const sessionId = entry.name.replace(/\.json$/, '');
         try {
           const content = await this.fsProvider.readFile(path.join(stateDir, entry.name));
@@ -1055,8 +1097,8 @@ export class ProjectScanner {
       // devtools-state dir may not exist yet — treat as "no terminal state".
     }
 
-    this.terminalStateCache = { map, timestamp: now };
-    return map;
+    this.terminalStateCache = { map, statuslineMap, timestamp: now };
+    return { map, statuslineMap };
   }
 
   /**
@@ -1066,8 +1108,22 @@ export class ProjectScanner {
     sessionId: string
   ): Promise<{ state: string; ts: number; cwd?: string } | undefined> {
     try {
-      const map = await this.loadTerminalStates();
+      const { map } = await this.loadTerminalStates();
       return map.get(sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns the statusline snapshot for a session, or undefined when absent.
+   */
+  private async getStatuslineForSession(
+    sessionId: string
+  ): Promise<NonNullable<Session['statusline']> | undefined> {
+    try {
+      const { statuslineMap } = await this.loadTerminalStates();
+      return statuslineMap.get(sessionId);
     } catch {
       return undefined;
     }

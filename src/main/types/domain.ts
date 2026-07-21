@@ -126,6 +126,28 @@ export interface Session {
    * Undefined when no state file exists for the session.
    */
   terminalState?: { state: string; ts: number; cwd?: string };
+  /**
+   * Snapshot of the owner's Claude Code statusline for this session, written by
+   * a hook to `${CLAUDE_ROOT}/devtools-state/<sessionId>.statusline.json`
+   * (sibling of the terminalState file). Present only for active sessions;
+   * undefined when no snapshot file exists. All fields best-effort.
+   */
+  statusline?: {
+    model?: string;
+    dir?: string;
+    branch?: string;
+    ahead?: string;
+    behind?: string;
+    /** REMAINING context % (already remaining, not consumed). */
+    context_pct?: number | null;
+    /** Weekly utilization % (e.g. 87). */
+    weekly_pct?: number | null;
+    weekly_reset?: string;
+    /** Current-session utilization % (e.g. 3). */
+    session_pct?: number | null;
+    session_reset?: string;
+    ts?: number;
+  };
 }
 
 /**
