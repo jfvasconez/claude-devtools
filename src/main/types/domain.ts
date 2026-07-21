@@ -111,6 +111,14 @@ export interface Session {
   status?: SessionStatus;
   /** Git branch name if available */
   gitBranch?: string;
+  /**
+   * How the session was started, derived from the first non-meta user message's
+   * top-level `promptSource`/`entrypoint` fields:
+   * - 'interactive': a real user session (typed prompt / cli entrypoint)
+   * - 'sdk': programmatically spawned (SDK agents, review bots)
+   * - undefined: unknown — treated as interactive downstream (never hidden by accident)
+   */
+  origin?: 'interactive' | 'sdk';
   /** Metadata completeness level */
   metadataLevel?: SessionMetadataLevel;
   /** Total context consumed (compaction-aware sum of all phases) */
