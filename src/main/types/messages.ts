@@ -13,6 +13,7 @@ import {
   LOCAL_COMMAND_STDERR_TAG,
   LOCAL_COMMAND_STDOUT_TAG,
   SYSTEM_OUTPUT_TAGS,
+  TASK_NOTIFICATION_TAG,
 } from '../constants/messageTags';
 
 import { type MessageType, type TokenUsage } from './domain';
@@ -166,6 +167,9 @@ export function isParsedUserChunkMessage(msg: ParsedMessage): boolean {
   if (msg.type !== 'user') return false;
   if (msg.isMeta === true) return false;
   if (isParsedTeammateMessage(msg)) return false;
+  // Auto-injected background-task notifications are NOT user input — they render
+  // as a muted system divider, not a "You" bubble. (Classified separately.)
+  if (isParsedTaskNotificationMessage(msg)) return false;
 
   const content = msg.content;
 
@@ -357,6 +361,49 @@ export function isParsedHardNoiseMessage(msg: ParsedMessage): boolean {
  */
 export function isParsedCompactMessage(msg: ParsedMessage): boolean {
   return msg.isCompactSummary === true;
+}
+
+/**
+ * Detect auto-injected background-task notification messages.
+ *
+ * Claude Code wraps background-task / subagent-completion events (and
+ * `Background command "..." completed (exit code N)` events) as `type: "user"`
+ * entries whose STRING content begins with `<task-notification>`. These are
+ * machine-generated events, NOT genuine user input, so they must not create a
+ * UserChunk / render as a "You" bubble.
+ *
+ * NOTE: this only matches STRING content (the wrapped notification form). It does
+ * NOT touch `type: "attachment"` queued-command entries, `isMeta: true`
+ * slash-command expansions (array content), or `<local-command-*>` output.
+ */
+export function isParsedTaskNotificationMessage(msg: ParsedMessage): boolean {
+  if (msg.type !== 'user') return false;
+  if (msg.isMeta === true) return false;
+  const content = msg.content;
+  if (typeof content !== 'string') return false;
+  return content.trimStart().startsWith(TASK_NOTIFICATION_TAG);
+}
+
+/**
+ * Extract a concise, human-readable label from a `<task-notification>` payload
+ * for the muted divider. Preference order:
+ *   1. `<summary>…</summary>` text (e.g. `Agent "X" finished`)
+ *   2. `Background command "X" completed (exit code N)`
+ *   3. generic `Background task completed`
+ */
+export function extractTaskNotificationLabel(content: string): string {
+  const summaryMatch = /<summary>([\s\S]*?)<\/summary>/.exec(content);
+  if (summaryMatch) {
+    const summary = summaryMatch[1].trim();
+    if (summary.length > 0) return summary;
+  }
+
+  const bgCommandMatch = /Background command "[^"]*" completed \(exit code \d+\)/.exec(content);
+  if (bgCommandMatch) {
+    return bgCommandMatch[0];
+  }
+
+  return 'Background task completed';
 }
 
 /**

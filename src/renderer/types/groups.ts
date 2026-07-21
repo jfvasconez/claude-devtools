@@ -377,14 +377,26 @@ export interface CompactGroup {
 }
 
 /**
- * Chat item - can be user, system, ai, or compact.
+ * Notification Group - an auto-injected background-task / agent-completion event.
+ * Rendered as a muted, centered system divider (not a bubble).
+ */
+export interface NotificationGroup {
+  id: string;
+  timestamp: Date;
+  /** Concise display label extracted from the notification payload. */
+  label: string;
+}
+
+/**
+ * Chat item - can be user, system, ai, compact, or notification.
  * These are INDEPENDENT items in a flat list, not paired turns.
  */
 export type ChatItem =
   | { type: 'user'; group: UserGroup }
   | { type: 'system'; group: SystemGroup }
   | { type: 'ai'; group: AIGroup }
-  | { type: 'compact'; group: CompactGroup };
+  | { type: 'compact'; group: CompactGroup }
+  | { type: 'notification'; group: NotificationGroup };
 
 /**
  * Session conversation as a flat list of independent chat items.

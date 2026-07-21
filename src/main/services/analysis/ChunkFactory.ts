@@ -12,8 +12,10 @@
 import {
   type EnhancedAIChunk,
   type EnhancedCompactChunk,
+  type EnhancedNotificationChunk,
   type EnhancedSystemChunk,
   type EnhancedUserChunk,
+  extractTaskNotificationLabel,
   type ParsedMessage,
   type Process,
 } from '@main/types';
@@ -85,6 +87,28 @@ export function buildCompactChunk(message: ParsedMessage): EnhancedCompactChunk 
     id,
     chunkType: 'compact',
     message,
+    startTime: message.timestamp,
+    endTime: message.timestamp,
+    durationMs: 0,
+    metrics,
+    rawMessages: [message],
+  };
+}
+
+/**
+ * Build a NotificationChunk from an auto-injected `<task-notification>` message.
+ */
+export function buildNotificationChunk(message: ParsedMessage): EnhancedNotificationChunk {
+  const id = generateStableChunkId('notification', message);
+  const metrics = calculateMetrics([message]);
+  const content = typeof message.content === 'string' ? message.content : '';
+  const label = extractTaskNotificationLabel(content);
+
+  return {
+    id,
+    chunkType: 'notification',
+    message,
+    label,
     startTime: message.timestamp,
     endTime: message.timestamp,
     durationMs: 0,

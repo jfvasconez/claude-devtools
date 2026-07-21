@@ -13,6 +13,7 @@ import {
   isAssistantMessage,
   isEnhancedAIChunk,
   isEnhancedCompactChunk,
+  isEnhancedNotificationChunk,
   isEnhancedSystemChunk,
   isEnhancedUserChunk,
 } from '@renderer/types/data';
@@ -24,6 +25,7 @@ import type {
   EnhancedAIChunk,
   EnhancedChunk,
   EnhancedCompactChunk,
+  EnhancedNotificationChunk,
   EnhancedSystemChunk,
   EnhancedUserChunk,
   ParsedMessage,
@@ -40,6 +42,7 @@ import type {
   CompactGroup,
   FileReference,
   ImageData,
+  NotificationGroup,
   SessionConversation,
   SystemGroup,
   UserGroup,
@@ -126,6 +129,11 @@ export function transformChunksToConversation(
         group: createCompactGroup(chunk),
       });
       compactCount++;
+    } else if (isEnhancedNotificationChunk(chunk)) {
+      items.push({
+        type: 'notification',
+        group: createNotificationGroup(chunk),
+      });
     } else {
       const unhandledChunkType =
         'chunkType' in chunk ? (chunk as EnhancedChunk).chunkType : 'unknown';
@@ -287,6 +295,11 @@ export function incrementalUpdateConversation(
         group: createCompactGroup(chunk),
       });
       compactCount++;
+    } else if (isEnhancedNotificationChunk(chunk)) {
+      items.push({
+        type: 'notification',
+        group: createNotificationGroup(chunk),
+      });
     }
   }
 
@@ -607,6 +620,24 @@ function createCompactGroup(chunk: EnhancedCompactChunk): CompactGroup {
     id: chunk.id, // Use stable chunk ID instead of array index
     timestamp: chunk.startTime,
     message: chunk.message, // Pass through the compact summary message
+  };
+}
+
+// =============================================================================
+// NotificationGroup Creation
+// =============================================================================
+
+/**
+ * Creates a NotificationGroup from an EnhancedNotificationChunk.
+ *
+ * @param chunk - The notification chunk to transform
+ * @returns NotificationGroup for the muted background-task divider
+ */
+function createNotificationGroup(chunk: EnhancedNotificationChunk): NotificationGroup {
+  return {
+    id: chunk.id, // Use stable chunk ID instead of array index
+    timestamp: chunk.startTime,
+    label: chunk.label,
   };
 }
 
