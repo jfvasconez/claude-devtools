@@ -360,6 +360,11 @@ export interface SessionFileMetadata {
   awaitingUserInput: boolean;
   /** True if the last "ending" event was a user interruption ("[Request interrupted by user"). */
   endedInterrupted: boolean;
+  /**
+   * How the session was started, derived from the FIRST non-meta user message's
+   * top-level `promptSource`/`entrypoint` fields. undefined when undeterminable.
+   */
+  origin?: 'interactive' | 'sdk';
 }
 
 /**
@@ -380,6 +385,7 @@ export async function analyzeSessionFileMetadata(
       hasError: false,
       awaitingUserInput: false,
       endedInterrupted: false,
+      origin: undefined,
     };
   }
 
@@ -391,6 +397,9 @@ export async function analyzeSessionFileMetadata(
 
   let firstUserMessage: { text: string; timestamp: string } | null = null;
   let firstCommandMessage: { text: string; timestamp: string } | null = null;
+  // Origin: derived from the FIRST non-meta user message's top-level promptSource/entrypoint.
+  let origin: 'interactive' | 'sdk' | undefined;
+  let originCaptured = false;
   let messageCount = 0;
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
@@ -458,6 +467,27 @@ export async function analyzeSessionFileMetadata(
 
     if (!gitBranch && 'gitBranch' in entry && entry.gitBranch) {
       gitBranch = entry.gitBranch;
+    }
+
+    // Capture origin from the FIRST non-meta user message. promptSource/entrypoint are
+    // TOP-LEVEL fields on the raw line object (not inside `message`), so read them off the
+    // raw entry as a record.
+    if (
+      !originCaptured &&
+      entry.type === 'user' &&
+      !('isMeta' in entry && entry.isMeta === true)
+    ) {
+      originCaptured = true;
+      const raw = entry as unknown as Record<string, unknown>;
+      const promptSource = typeof raw.promptSource === 'string' ? raw.promptSource : undefined;
+      const entrypoint = typeof raw.entrypoint === 'string' ? raw.entrypoint : undefined;
+      if (promptSource === 'typed' || entrypoint === 'cli') {
+        origin = 'interactive';
+      } else if (promptSource === 'sdk' || entrypoint?.startsWith('sdk')) {
+        origin = 'sdk';
+      } else {
+        origin = undefined;
+      }
     }
 
     if (
@@ -684,5 +714,6 @@ export async function analyzeSessionFileMetadata(
     hasError,
     awaitingUserInput: lastAskUserQuestionId !== null && !lastAskUserQuestionAnswered,
     endedInterrupted: lastEndingWasInterrupt,
+    origin,
   };
 }
