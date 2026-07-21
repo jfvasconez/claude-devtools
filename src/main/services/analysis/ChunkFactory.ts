@@ -13,8 +13,10 @@ import {
   type EnhancedAIChunk,
   type EnhancedCompactChunk,
   type EnhancedNotificationChunk,
+  type EnhancedShellCommandChunk,
   type EnhancedSystemChunk,
   type EnhancedUserChunk,
+  extractShellCommandParts,
   extractTaskNotificationLabel,
   type ParsedMessage,
   type Process,
@@ -115,6 +117,54 @@ export function buildNotificationChunk(message: ParsedMessage): EnhancedNotifica
     metrics,
     rawMessages: [message],
   };
+}
+
+/**
+ * Build a ShellCommandChunk from a `<bash-input>` command message.
+ *
+ * The command entry may already contain inline `<bash-stdout>`/`<bash-stderr>`
+ * (combined form); those are extracted here. Output from a SEPARATE following
+ * entry is merged in later via {@link mergeShellOutput}.
+ */
+export function buildShellCommandChunk(message: ParsedMessage): EnhancedShellCommandChunk {
+  const id = generateStableChunkId('shell', message);
+  const metrics = calculateMetrics([message]);
+  const content = typeof message.content === 'string' ? message.content : '';
+  const { command, stdout, stderr } = extractShellCommandParts(content);
+
+  return {
+    id,
+    chunkType: 'shell',
+    message,
+    command,
+    stdout,
+    stderr,
+    startTime: message.timestamp,
+    endTime: message.timestamp,
+    durationMs: 0,
+    metrics,
+    rawMessages: [message],
+  };
+}
+
+/**
+ * Merge a following `<bash-stdout>`/`<bash-stderr>` output entry into an existing
+ * shell-command chunk. Appends captured output, extends timing, and records the
+ * merged message so the command + its output render as one block.
+ */
+export function mergeShellOutput(
+  chunk: EnhancedShellCommandChunk,
+  message: ParsedMessage
+): void {
+  const content = typeof message.content === 'string' ? message.content : '';
+  const { stdout, stderr } = extractShellCommandParts(content);
+  if (stdout) chunk.stdout = chunk.stdout ? `${chunk.stdout}\n${stdout}` : stdout;
+  if (stderr) chunk.stderr = chunk.stderr ? `${chunk.stderr}\n${stderr}` : stderr;
+  if (message.timestamp > chunk.endTime) {
+    chunk.endTime = message.timestamp;
+    chunk.durationMs = chunk.endTime.getTime() - chunk.startTime.getTime();
+  }
+  chunk.rawMessages.push(message);
 }
 
 /**

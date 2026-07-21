@@ -14,6 +14,7 @@ import {
   isEnhancedAIChunk,
   isEnhancedCompactChunk,
   isEnhancedNotificationChunk,
+  isEnhancedShellCommandChunk,
   isEnhancedSystemChunk,
   isEnhancedUserChunk,
 } from '@renderer/types/data';
@@ -26,6 +27,7 @@ import type {
   EnhancedChunk,
   EnhancedCompactChunk,
   EnhancedNotificationChunk,
+  EnhancedShellCommandChunk,
   EnhancedSystemChunk,
   EnhancedUserChunk,
   ParsedMessage,
@@ -44,6 +46,7 @@ import type {
   ImageData,
   NotificationGroup,
   SessionConversation,
+  ShellGroup,
   SystemGroup,
   UserGroup,
   UserGroupContent,
@@ -133,6 +136,11 @@ export function transformChunksToConversation(
       items.push({
         type: 'notification',
         group: createNotificationGroup(chunk),
+      });
+    } else if (isEnhancedShellCommandChunk(chunk)) {
+      items.push({
+        type: 'shell',
+        group: createShellGroup(chunk),
       });
     } else {
       const unhandledChunkType =
@@ -299,6 +307,11 @@ export function incrementalUpdateConversation(
       items.push({
         type: 'notification',
         group: createNotificationGroup(chunk),
+      });
+    } else if (isEnhancedShellCommandChunk(chunk)) {
+      items.push({
+        type: 'shell',
+        group: createShellGroup(chunk),
       });
     }
   }
@@ -638,6 +651,26 @@ function createNotificationGroup(chunk: EnhancedNotificationChunk): Notification
     id: chunk.id, // Use stable chunk ID instead of array index
     timestamp: chunk.startTime,
     label: chunk.label,
+  };
+}
+
+// =============================================================================
+// ShellGroup Creation
+// =============================================================================
+
+/**
+ * Creates a ShellGroup from an EnhancedShellCommandChunk.
+ *
+ * @param chunk - The shell-command chunk to transform
+ * @returns ShellGroup for the terminal-style command block
+ */
+function createShellGroup(chunk: EnhancedShellCommandChunk): ShellGroup {
+  return {
+    id: chunk.id, // Use stable chunk ID instead of array index
+    timestamp: chunk.startTime,
+    command: chunk.command,
+    stdout: chunk.stdout,
+    stderr: chunk.stderr,
   };
 }
 

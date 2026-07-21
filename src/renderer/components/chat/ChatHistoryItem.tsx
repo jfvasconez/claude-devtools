@@ -9,6 +9,7 @@ import {
 
 import { AIChatGroup } from './AIChatGroup';
 import { CompactBoundary } from './CompactBoundary';
+import { ShellCommandGroup } from './ShellCommandGroup';
 import { SystemChatGroup } from './SystemChatGroup';
 import { TaskNotificationDivider } from './TaskNotificationDivider';
 import { UserChatGroup } from './UserChatGroup';
@@ -127,6 +128,12 @@ const ChatHistoryItemInner = ({
       return <CompactBoundary compactGroup={item.group} />;
     case 'notification':
       return <TaskNotificationDivider notificationGroup={item.group} />;
+    case 'shell':
+      return (
+        <div ref={registerChatItemRef(item.group.id)}>
+          <ShellCommandGroup shellGroup={item.group} />
+        </div>
+      );
     default:
       return null;
   }

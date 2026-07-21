@@ -12,6 +12,7 @@
 import {
   isParsedCompactMessage,
   isParsedHardNoiseMessage,
+  isParsedShellMessage,
   isParsedSystemChunkMessage,
   isParsedTaskNotificationMessage,
   isParsedUserChunkMessage,
@@ -55,6 +56,12 @@ function categorizeMessage(message: ParsedMessage): MessageCategory {
   // never mistaken for a "You" bubble)
   if (isParsedTaskNotificationMessage(message)) {
     return 'notification';
+  }
+
+  // Check interactive `!` shell commands and their output (before user, so they
+  // are never mistaken for a "You" bubble)
+  if (isParsedShellMessage(message)) {
+    return 'shell';
   }
 
   // Check system (command output)
