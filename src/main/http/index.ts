@@ -17,6 +17,7 @@ import { registerSessionRoutes } from './sessions';
 import { registerSshRoutes } from './ssh';
 import { registerSubagentRoutes } from './subagents';
 import { registerUpdaterRoutes } from './updater';
+import { registerUsageRoutes } from './usage';
 import { registerUtilityRoutes } from './utility';
 import { registerValidationRoutes } from './validation';
 
@@ -58,6 +59,7 @@ export function registerHttpRoutes(
   registerConfigRoutes(app);
   registerValidationRoutes(app);
   registerUtilityRoutes(app);
+  registerUsageRoutes(app);
   registerSshRoutes(app, services.sshConnectionManager, sshModeSwitchCallback);
   registerUpdaterRoutes(app, services);
   registerMemoryRoutes(app, services);
