@@ -24,6 +24,7 @@ import type {
   RepositoryGroup,
   SearchSessionsResult,
   Session,
+  SessionAppendEvent,
   SessionDetailResponse,
   SessionMetrics,
   SessionsByIdsOptions,
@@ -439,6 +440,11 @@ export interface ElectronAPI {
   // File change events (real-time updates)
   onFileChange: (callback: (event: FileChangeEvent) => void) => () => void;
   onTodoChange: (callback: (event: FileChangeEvent) => void) => () => void;
+  /**
+   * Incremental append delta for an open session — carries rebuilt chunks so the
+   * renderer updates the conversation without a full `getSessionDetail` re-fetch.
+   */
+  onSessionAppend: (callback: (event: SessionAppendEvent) => void) => () => void;
 
   // Session refresh (Ctrl+R / Cmd+R intercepted by main process)
   onSessionRefresh: (callback: () => void) => () => void;

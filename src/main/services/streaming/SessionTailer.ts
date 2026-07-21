@@ -17,9 +17,18 @@
  * streaming for sessions nobody is watching.
  */
 
-import { type ChatHistoryEntry, type FileChangeEvent } from '@main/types';
+import {
+  type ChatHistoryEntry,
+  type FileChangeEvent,
+  type ParsedMessage,
+  type Process,
+  type SessionAppendEvent,
+} from '@main/types';
+import { parseChatHistoryEntries, parseJsonlFile } from '@main/utils/jsonl';
 import { createLogger } from '@shared/utils/logger';
 import { EventEmitter } from 'events';
+
+import { ChunkBuilder } from '../analysis/ChunkBuilder';
 
 import type { FileSystemProvider } from '../infrastructure/FileSystemProvider';
 
@@ -28,29 +37,7 @@ const logger = createLogger('Service:SessionTailer');
 /** Soft cap on tracked open sessions; oldest (LRU) is evicted past this. */
 const MAX_TRACKED_SESSIONS = 8;
 
-/**
- * Payload for the `session-append` SSE event.
- * Emitted only for baselined sessions on clean forward growth.
- */
-export interface SessionAppendEvent {
-  sessionId: string;
-  /** Project id when known (state-file changes carry none — those are never tailed). */
-  projectId?: string;
-  /**
-   * Raw parsed JSONL line objects (the direct `JSON.parse` of each complete appended
-   * line), in file order. NOT run through the session parser — the renderer transforms
-   * them the same way it transforms a full `getSessionDetail` payload.
-   */
-  entries: ChatHistoryEntry[];
-  /**
-   * Byte offset (complete-line boundary) this delta STARTS at. Equals the previous
-   * `tailOffset` (or the `getSessionDetail` baseline for the first delta). The renderer
-   * compares this against its expected offset to detect a gap/overlap and refetch.
-   */
-  baseOffset: number;
-  /** Byte offset (complete-line boundary) AFTER this delta. The renderer's new baseline. */
-  tailOffset: number;
-}
+export type { SessionAppendEvent };
 
 /** Per-session tail state. */
 interface TailState {
@@ -62,12 +49,28 @@ interface TailState {
   partial: string;
   /** Birthtime fingerprint to detect file replacement/rewrite (inode not exposed by provider). */
   birthtimeMs: number;
+  /**
+   * Cached parsed-message list for this open session — the full message history seen
+   * so far. Seeded by `primeMessages` (from `getSessionDetail`, which already parsed
+   * them) and grown by appending each delta's parsed entries. Rebuilding chunks from
+   * this in-memory list is the win: no disk read, no re-JSON.parse of old entries.
+   * `undefined` until seeded or lazily reconstructed on first append.
+   */
+  messages?: ParsedMessage[];
+  /**
+   * Resolved subagents for the session, reused when rebuilding chunks. Subagents
+   * discovered mid-stream are NOT re-resolved here (that needs disk reads); they
+   * surface on the next full `getSessionDetail`. Empty on the lazy-reconstruct path.
+   */
+  subagents: Process[];
 }
 
 export class SessionTailer extends EventEmitter {
   /** Insertion-ordered map used as an LRU (most-recently-baselined last). */
   private readonly sessions = new Map<string, TailState>();
   private fsProvider: FileSystemProvider;
+  /** Stateless: `buildChunks(messages, subagents)` uses no fs/instance state. */
+  private readonly chunkBuilder = new ChunkBuilder();
 
   constructor(fsProvider: FileSystemProvider) {
     super();
@@ -88,8 +91,16 @@ export class SessionTailer extends EventEmitter {
    * view, so the first `session-append` starts exactly where that load ended.
    */
   setBaseline(sessionId: string, filePath: string, byteLength: number, projectId?: string): void {
+    const existing = this.sessions.get(sessionId);
     // Re-insert to move to the MRU end of the LRU map.
     this.sessions.delete(sessionId);
+
+    // Preserve the parsed-message cache across a re-arm (cache-hit / fingerprint-match
+    // re-baseline) when it still describes the same file at the same offset. A moved
+    // offset means the cache is stale relative to the new baseline, so drop it and let
+    // the next append re-seed (via primeMessages) or lazily reconstruct.
+    const preserve =
+      existing !== undefined && existing.path === filePath && existing.offset === byteLength;
 
     // stat is async; baseline just needs the offset. Birthtime is captured lazily on the
     // first change instead of blocking this call — a 0 sentinel means "not yet captured".
@@ -97,12 +108,30 @@ export class SessionTailer extends EventEmitter {
       path: filePath,
       projectId,
       offset: byteLength,
-      partial: '',
-      birthtimeMs: 0,
+      partial: preserve ? existing.partial : '',
+      birthtimeMs: preserve ? existing.birthtimeMs : 0,
+      messages: preserve ? existing.messages : undefined,
+      subagents: preserve ? existing.subagents : [],
     });
 
     this.evictIfNeeded();
     logger.info(`SessionTailer: baseline set for ${sessionId} at offset ${byteLength}`);
+  }
+
+  /**
+   * Seeds the parsed-message cache for a baselined session from the messages
+   * `getSessionDetail` already parsed. This lets the first (and every) append rebuild
+   * chunks purely in-memory — no disk read, no re-JSON.parse. No-op if the session
+   * isn't currently baselined (nothing to attach the cache to).
+   */
+  primeMessages(sessionId: string, messages: ParsedMessage[], subagents: Process[]): void {
+    const state = this.sessions.get(sessionId);
+    if (!state) {
+      return;
+    }
+    // Copy so later mutation (appending deltas) can't leak into caller-owned arrays.
+    state.messages = [...messages];
+    state.subagents = subagents;
   }
 
   /** Drops a session's tail state (e.g. on unlink or when the user closes it). */
@@ -184,10 +213,16 @@ export class SessionTailer extends EventEmitter {
 
       const tailOffset = state.offset - Buffer.byteLength(state.partial, 'utf8');
 
+      // Grow the in-memory message list, then rebuild chunks from it. This is the
+      // whole point: chunks are produced WITHOUT re-reading the file and WITHOUT
+      // re-JSON.parsing already-seen entries.
+      const chunks = await this.rebuildChunks(state, entries);
+
       const payload: SessionAppendEvent = {
         sessionId,
         projectId: state.projectId ?? event.projectId,
         entries,
+        chunks,
         baseOffset,
         tailOffset,
       };
@@ -238,6 +273,37 @@ export class SessionTailer extends EventEmitter {
     }
 
     return { entries, partial: buffer };
+  }
+
+  /**
+   * Grows the session's cached parsed-message list with `newEntries` and rebuilds the
+   * full chunk array from it — the same `EnhancedChunk[]` shape `getSessionDetail`
+   * returns, so the renderer applies both identically.
+   *
+   * Fast path (seeded via `primeMessages`): parse only the new entries in-memory and
+   * append them, then rebuild chunks. No disk IO, no re-parse of prior entries.
+   *
+   * Fallback (never seeded, or LRU-evicted then re-armed): reconstruct the message list
+   * once by reading+parsing the whole file. This full parse happens at most once per
+   * (re)baseline — subsequent appends are back on the fast path. Subagents are unknown
+   * on this path (empty), so mid-stream subagent links appear only on the next full
+   * fetch; correctness degrades to today's behavior, never worse.
+   */
+  private async rebuildChunks(
+    state: TailState,
+    newEntries: ChatHistoryEntry[]
+  ): Promise<ReturnType<ChunkBuilder['buildChunks']>> {
+    if (!state.messages) {
+      // Reading to EOF already includes newEntries — this replaces the list wholesale.
+      state.messages = await parseJsonlFile(state.path, this.fsProvider);
+    } else {
+      // Append-only, exactly mirroring parseJsonlFile: every complete new line becomes a
+      // message (no uuid dedup — streaming updates append same-uuid lines that the full
+      // parse also keeps, and exact byte-offset tracking guarantees no line is re-read).
+      state.messages.push(...parseChatHistoryEntries(newEntries));
+    }
+
+    return this.chunkBuilder.buildChunks(state.messages, state.subagents);
   }
 
   /** Evicts the least-recently-baselined session past the soft cap. */

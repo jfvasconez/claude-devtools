@@ -169,6 +169,13 @@ export function registerSessionRoutes(app: FastifyInstance, services: HttpServic
               sessionDetail.tailOffset,
               safeProjectId
             );
+            // Seed the tailer's message cache from the cached detail so appends rebuild
+            // chunks in-memory (no disk read on the first append).
+            services.sessionTailer.primeMessages(
+              safeSessionId,
+              sessionDetail.messages,
+              sessionDetail.processes
+            );
           }
           return sessionDetail;
         }
@@ -222,6 +229,13 @@ export function registerSessionRoutes(app: FastifyInstance, services: HttpServic
             sessionPath,
             stats.size,
             safeProjectId
+          );
+          // Seed the tailer's message cache from the messages we just parsed so the
+          // first append rebuilds chunks fully in-memory (no re-read, no re-parse).
+          services.sessionTailer?.primeMessages(
+            safeSessionId,
+            parsedSession.messages,
+            subagents
           );
         } catch (err) {
           // Non-fatal: without a baseline the session just falls back to file-change refetches.

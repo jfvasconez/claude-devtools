@@ -194,6 +194,33 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
 }
 
 /**
+ * Parse a batch of already-JSON-parsed raw JSONL entries into ParsedMessage[].
+ *
+ * This is the in-memory counterpart of {@link parseJsonlFile}: it runs the exact
+ * same per-entry parsing (`parseChatHistoryEntry`) but over objects the caller has
+ * ALREADY deserialized (e.g. the SessionTailer, which JSON.parses each appended
+ * line). Using it avoids re-reading the file and re-JSON.parsing entries that were
+ * already parsed — the dominant cost of the old full-refetch path.
+ *
+ * Malformed entries (missing uuid / unknown type) are skipped, mirroring the
+ * file-based path.
+ */
+export function parseChatHistoryEntries(entries: ChatHistoryEntry[]): ParsedMessage[] {
+  const messages: ParsedMessage[] = [];
+  for (const entry of entries) {
+    try {
+      const parsed = parseChatHistoryEntry(entry);
+      if (parsed) {
+        messages.push(parsed);
+      }
+    } catch (error) {
+      logger.error('Error parsing in-memory chat history entry:', error);
+    }
+  }
+  return messages;
+}
+
+/**
  * Parse message type string into enum.
  */
 function parseMessageType(type?: string): MessageType | null {

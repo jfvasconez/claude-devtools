@@ -87,6 +87,7 @@ import type {
   TriggerTestResult,
   WslClaudeRootCandidate,
 } from '@shared/types';
+import type { SessionAppendEvent } from '@main/types';
 
 // =============================================================================
 // IPC Result Types and Helpers
@@ -361,6 +362,16 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('file-change', listener);
     return (): void => {
       ipcRenderer.removeListener('file-change', listener);
+    };
+  },
+
+  // Incremental session-append deltas (open-session live updates, no re-fetch)
+  onSessionAppend: (callback: (event: SessionAppendEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: SessionAppendEvent): void =>
+      callback(data);
+    ipcRenderer.on('session-append', listener);
+    return (): void => {
+      ipcRenderer.removeListener('session-append', listener);
     };
   },
 
