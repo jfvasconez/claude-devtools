@@ -9,7 +9,16 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronsDown } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
+import { ChatFilterBar } from './ChatFilterBar';
+import {
+  ALL_FILTER_TYPES,
+  getAIGroupFilterTypes,
+  isAIGroupVisible,
+  type FilterType,
+} from './chatItemFilter';
 import { SessionContextPanel } from './SessionContextPanel/index';
+
+import { enhanceAIGroup } from '@renderer/utils/aiGroupEnhancer';
 
 /** Pixels from bottom considered "near bottom" for scroll-button visibility and auto-scroll. */
 const SCROLL_THRESHOLD = 300;
@@ -50,6 +59,9 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     expandSubagentTrace,
     selectedContextPhase,
     setSelectedContextPhase,
+    hiddenFilterTypes,
+    toggleFilterType,
+    setHiddenFilterTypes,
   } = useTabUI();
 
   // Global store subscriptions (shared data)
@@ -182,7 +194,35 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const isSearchActive = searchQuery.trim().length > 0;
-  const shouldVirtualize = (conversation?.items.length ?? 0) >= VIRTUALIZATION_THRESHOLD;
+
+  // Per-group present filter-types, computed once per conversation (toggle-independent).
+  // enhanceAIGroup is pure over already-parsed data; stats args only affect the
+  // claudeMdStats field, which the filter-type computation does not read.
+  const groupFilterTypes = useMemo(() => {
+    const map = new Map<string, Set<FilterType>>();
+    if (!conversation?.items) return map;
+    for (const item of conversation.items) {
+      if (item.type === 'ai') {
+        map.set(item.group.id, getAIGroupFilterTypes(enhanceAIGroup(item.group)));
+      }
+    }
+    return map;
+  }, [conversation]);
+
+  // Apply the per-type filter at the top level: an AI group drops out of the
+  // (virtualized) list when every type it contains is hidden. Non-AI items (user,
+  // system, compact) have no chip and always remain.
+  const filteredItems = useMemo(() => {
+    const items = conversation?.items ?? [];
+    if (hiddenFilterTypes.size === 0) return items;
+    return items.filter((item) => {
+      if (item.type !== 'ai') return true;
+      const types = groupFilterTypes.get(item.group.id) ?? new Set<FilterType>();
+      return isAIGroupVisible(types, hiddenFilterTypes);
+    });
+  }, [conversation, groupFilterTypes, hiddenFilterTypes]);
+
+  const shouldVirtualize = filteredItems.length >= VIRTUALIZATION_THRESHOLD;
   const emptyRenderedSyncCountRef = useRef(0);
 
   const setSearchQueryForTab = useCallback(
@@ -192,19 +232,18 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     [setSearchQuery, conversation]
   );
 
+  // Index map is built over the FILTERED list so navigation/search scrollToIndex stays
+  // aligned with what the virtualizer actually renders.
   const groupIndexMap = useMemo(() => {
     const map = new Map<string, number>();
-    if (!conversation?.items) {
-      return map;
-    }
-    conversation.items.forEach((item, index) => {
+    filteredItems.forEach((item, index) => {
       map.set(item.group.id, index);
     });
     return map;
-  }, [conversation]);
+  }, [filteredItems]);
 
   const rowVirtualizer = useVirtualizer({
-    count: shouldVirtualize ? (conversation?.items.length ?? 0) : 0,
+    count: shouldVirtualize ? filteredItems.length : 0,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => ESTIMATED_CHAT_ITEM_HEIGHT,
     overscan: 8,
@@ -784,6 +823,15 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
             className="mx-auto max-w-5xl px-6 py-8"
             style={{ marginTop: allContextInjections.length > 0 ? '-2rem' : 0 }}
           >
+            {/* Always-visible per-type filter bar, positioned just below the Context button */}
+            <div className="mb-6 overflow-hidden rounded-lg" style={{ border: '1px solid var(--color-border)' }}>
+              <ChatFilterBar
+                hidden={hiddenFilterTypes}
+                onToggle={toggleFilterType}
+                onAll={() => setHiddenFilterTypes(new Set())}
+                onNone={() => setHiddenFilterTypes(new Set(ALL_FILTER_TYPES))}
+              />
+            </div>
             <div className="space-y-8">
               {shouldVirtualize ? (
                 <div
@@ -794,7 +842,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                   }}
                 >
                   {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                    const item = conversation.items[virtualRow.index];
+                    const item = filteredItems[virtualRow.index];
                     if (!item) return null;
                     return (
                       <div
@@ -826,7 +874,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                   })}
                 </div>
               ) : (
-                conversation.items.map((item) => (
+                filteredItems.map((item) => (
                   <ChatHistoryItem
                     key={item.group.id}
                     item={item}
