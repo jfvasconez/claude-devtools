@@ -59,10 +59,17 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     expandSubagentTrace,
     selectedContextPhase,
     setSelectedContextPhase,
-    hiddenFilterTypes,
-    toggleFilterType,
-    setHiddenFilterTypes,
   } = useTabUI();
+
+  // Per-type filter selection is GLOBAL (shared across all sessions/tabs) and persisted
+  // to localStorage — read/write it from the top-level filter slice, not per-tab state.
+  const { hiddenFilterTypes, toggleFilterType, setHiddenFilterTypes } = useStore(
+    useShallow((s) => ({
+      hiddenFilterTypes: s.globalHiddenFilterTypes,
+      toggleFilterType: s.toggleGlobalFilterType,
+      setHiddenFilterTypes: s.setGlobalHiddenFilterTypes,
+    }))
+  );
 
   // Global store subscriptions (shared data)
   const {
@@ -266,9 +273,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     [groupIndexMap, rowVirtualizer, shouldVirtualize]
   );
 
-  // Sticky context button height (py-3 = 12px padding * 2 + button height ~28px + pt-3 = 12px)
-  // Total: approximately 52px, round up to 60px for safety
-  const STICKY_BUTTON_OFFSET = allContextInjections.length > 0 ? 60 : 0;
+  // Height of the pinned header, so scroll-into-view navigation clears it. The filter bar
+  // is always present (~72px: px-6 py-3 wrapper + bordered chip box); the Context button
+  // row (~48px) only exists when there are context injections. Chips may wrap taller — this
+  // is an estimate with headroom, matching the pre-existing best-effort offset.
+  const STICKY_BUTTON_OFFSET = allContextInjections.length > 0 ? 120 : 72;
 
   // Unified navigation controller - replaces useNavigationCoordinator + useSearchContextNavigation
   // Must be created before useAutoScrollBottom so we can pass shouldDisableAutoScroll
@@ -860,42 +869,60 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
           style={{ backgroundColor: 'var(--color-surface)' }}
           onScroll={checkScrollButton}
         >
-          {/* Sticky Context button */}
-          {allContextInjections.length > 0 && (
-            <div className="pointer-events-none sticky top-0 z-10 flex justify-end px-4 pb-0 pt-3">
-              <button
-                onClick={() => setContextPanelVisible(!isContextPanelVisible)}
-                onMouseEnter={() => setIsContextButtonHovered(true)}
-                onMouseLeave={() => setIsContextButtonHovered(false)}
-                className="pointer-events-auto flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs shadow-lg transition-colors"
-                style={{
-                  backgroundColor: isContextPanelVisible
-                    ? 'var(--context-btn-active-bg)'
-                    : isContextButtonHovered
-                      ? 'var(--context-btn-bg-hover)'
-                      : 'var(--context-btn-bg)',
-                  color: isContextPanelVisible
-                    ? 'var(--context-btn-active-text)'
-                    : 'var(--color-text-secondary)',
-                }}
-              >
-                Context ({allContextInjections.length})
-              </button>
-            </div>
-          )}
+          {/*
+            Pinned header — the Context button row and the per-type filter bar both stay
+            visible while the messages scroll UNDER them. Sticky (not fixed) so it keeps its
+            place in the scroll container's normal flow: the virtualized list below starts
+            right beneath it, so no scrollMargin adjustment is needed and virtualization is
+            unaffected. Solid theme-aware background + z-20 (above chat content, below the
+            z-20 scroll-to-bottom button which is absolutely positioned at the bottom).
+          */}
           <div
-            className="mx-auto max-w-5xl px-6 py-8"
-            style={{ marginTop: allContextInjections.length > 0 ? '-2rem' : 0 }}
+            className="sticky top-0 z-20"
+            style={{
+              backgroundColor: 'var(--color-surface)',
+              borderBottom: '1px solid var(--color-border)',
+            }}
           >
-            {/* Always-visible per-type filter bar, positioned just below the Context button */}
-            <div className="mb-6 overflow-hidden rounded-lg" style={{ border: '1px solid var(--color-border)' }}>
-              <ChatFilterBar
-                hidden={hiddenFilterTypes}
-                onToggle={toggleFilterType}
-                onAll={() => setHiddenFilterTypes(new Set())}
-                onNone={() => setHiddenFilterTypes(new Set(ALL_FILTER_TYPES))}
-              />
+            {/* Context button row (right-aligned) */}
+            {allContextInjections.length > 0 && (
+              <div className="flex justify-end px-4 pt-3">
+                <button
+                  onClick={() => setContextPanelVisible(!isContextPanelVisible)}
+                  onMouseEnter={() => setIsContextButtonHovered(true)}
+                  onMouseLeave={() => setIsContextButtonHovered(false)}
+                  className="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs shadow-lg transition-colors"
+                  style={{
+                    backgroundColor: isContextPanelVisible
+                      ? 'var(--context-btn-active-bg)'
+                      : isContextButtonHovered
+                        ? 'var(--context-btn-bg-hover)'
+                        : 'var(--context-btn-bg)',
+                    color: isContextPanelVisible
+                      ? 'var(--context-btn-active-text)'
+                      : 'var(--color-text-secondary)',
+                  }}
+                >
+                  Context ({allContextInjections.length})
+                </button>
+              </div>
+            )}
+            {/* Always-visible, wrap-friendly per-type filter chips */}
+            <div className="mx-auto max-w-5xl px-6 py-3">
+              <div
+                className="overflow-hidden rounded-lg"
+                style={{ border: '1px solid var(--color-border)' }}
+              >
+                <ChatFilterBar
+                  hidden={hiddenFilterTypes}
+                  onToggle={toggleFilterType}
+                  onAll={() => setHiddenFilterTypes(new Set())}
+                  onNone={() => setHiddenFilterTypes(new Set(ALL_FILTER_TYPES))}
+                />
+              </div>
             </div>
+          </div>
+          <div className="mx-auto max-w-5xl px-6 pb-8 pt-6">
             <div className="space-y-8">
               {shouldVirtualize ? (
                 <div

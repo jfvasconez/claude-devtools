@@ -40,7 +40,7 @@ export const FILTER_DEFS: ReadonlyArray<{ type: FilterType; label: string }> = [
   { type: 'read', label: 'Read' },
   { type: 'edit', label: 'Edit' },
   { type: 'write', label: 'Write' },
-  { type: 'task', label: 'Task' },
+  { type: 'task', label: 'Agent' },
   { type: 'webfetch', label: 'WebFetch' },
   { type: 'websearch', label: 'WebSearch' },
   { type: 'toolsearch', label: 'ToolSearch' },

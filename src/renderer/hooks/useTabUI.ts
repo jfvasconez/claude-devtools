@@ -46,10 +46,6 @@ interface UseTabUIReturn {
   expandSubagentTrace: (subagentId: string) => void;
   isContextPanelVisible: boolean;
   setContextPanelVisible: (visible: boolean) => void;
-  /** Set of HIDDEN filter-type strings for this tab (empty = all shown). */
-  hiddenFilterTypes: Set<string>;
-  toggleFilterType: (filterType: string) => void;
-  setHiddenFilterTypes: (hidden: Set<string>) => void;
   selectedContextPhase: number | null;
   setSelectedContextPhase: (phase: number | null) => void;
   savedScrollTop: number | undefined;
@@ -89,8 +85,6 @@ export function useTabUI(): UseTabUIReturn {
     toggleSubagentTraceExpansionForTab,
     expandSubagentTraceForTab,
     setContextPanelVisibleForTab,
-    toggleFilterTypeForTab,
-    setHiddenFilterTypesForTab,
     setSelectedContextPhaseForTab,
     saveScrollPositionForTab,
     initTabUIState,
@@ -103,8 +97,6 @@ export function useTabUI(): UseTabUIReturn {
       toggleSubagentTraceExpansionForTab: s.toggleSubagentTraceExpansionForTab,
       expandSubagentTraceForTab: s.expandSubagentTraceForTab,
       setContextPanelVisibleForTab: s.setContextPanelVisibleForTab,
-      toggleFilterTypeForTab: s.toggleFilterTypeForTab,
-      setHiddenFilterTypesForTab: s.setHiddenFilterTypesForTab,
       setSelectedContextPhaseForTab: s.setSelectedContextPhaseForTab,
       saveScrollPositionForTab: s.saveScrollPositionForTab,
       initTabUIState: s.initTabUIState,
@@ -207,28 +199,6 @@ export function useTabUI(): UseTabUIReturn {
     [tabId, setContextPanelVisibleForTab]
   );
 
-  // Per-type filter - derive from tabState (empty = all shown)
-  const hiddenFilterTypes = useMemo(
-    () => tabState?.hiddenFilterTypes ?? new Set<string>(),
-    [tabState]
-  );
-
-  const toggleFilterType = useCallback(
-    (filterType: string): void => {
-      if (!tabId) return;
-      toggleFilterTypeForTab(tabId, filterType);
-    },
-    [tabId, toggleFilterTypeForTab]
-  );
-
-  const setHiddenFilterTypes = useCallback(
-    (hidden: Set<string>): void => {
-      if (!tabId) return;
-      setHiddenFilterTypesForTab(tabId, hidden);
-    },
-    [tabId, setHiddenFilterTypesForTab]
-  );
-
   // Context phase selection - derive from tabState
   const selectedContextPhase = tabState?.selectedContextPhase ?? null;
 
@@ -280,11 +250,6 @@ export function useTabUI(): UseTabUIReturn {
     // Context panel
     isContextPanelVisible,
     setContextPanelVisible,
-
-    // Per-type filter
-    hiddenFilterTypes,
-    toggleFilterType,
-    setHiddenFilterTypes,
 
     // Context phase selection
     selectedContextPhase,
