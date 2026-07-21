@@ -31,7 +31,7 @@ import {
 import { getTerminalVisual, type TerminalStateInfo } from '@renderer/constants/sessionStatus';
 import { useUsage, type UsageWindow } from '@renderer/hooks/useUsage';
 import { useStore } from '@renderer/store';
-import { getModelColorClass, parseModelString } from '@shared/utils/modelParser';
+import { parseModelString } from '@shared/utils/modelParser';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { ModelInfo } from '@shared/utils/modelParser';
@@ -125,6 +125,10 @@ function formatSessionReset(iso: string): string {
   if (h === 0) h = 12;
   return `${h}:${m.toString().padStart(2, '0')}${meridiem}`;
 }
+
+/** Match the owner's statusline ANSI colors: model + dir = blue (94), branch = cyan (96). */
+const STATUSLINE_BLUE = '#3b8eea';
+const STATUSLINE_CYAN = '#29b8db';
 
 interface StatusBarProps {
   /** Tab id whose session detail should be shown. */
@@ -237,11 +241,6 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
   // SNAPSHOT MODE — exact mirror of the owner's live statusline.
   // ===========================================================================
   if (snapshot) {
-    // Snapshot model is already the friendly display name; derive family for
-    // color only (best-effort — a friendly label may not parse).
-    const parsedFamily = snapshot.model ? parseModelString(snapshot.model)?.family : undefined;
-    const modelColorClass = parsedFamily ? getModelColorClass(parsedFamily) : '';
-
     const branch = snapshot.branch?.trim();
     const ahead = snapshot.ahead && snapshot.ahead !== '0' ? snapshot.ahead : '';
     const behind = snapshot.behind && snapshot.behind !== '0' ? snapshot.behind : '';
@@ -252,21 +251,27 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
 
     return (
       <div className={containerClass} style={containerStyle} title={`Session ${session.id}`}>
-        {/* Model */}
+        {/* Model — statusline blue */}
         {snapshot.model && (
-          <span className={`shrink-0 ${modelColorClass}`}>{snapshot.model}</span>
+          <span className="shrink-0" style={{ color: STATUSLINE_BLUE }}>
+            {snapshot.model}
+          </span>
         )}
 
-        {/* Directory (truncates first when the row is tight) */}
+        {/* Directory — statusline blue (truncates first when the row is tight) */}
         {snapshot.dir && (
-          <span className="min-w-0 truncate" title={snapshot.dir}>
+          <span
+            className="min-w-0 truncate"
+            style={{ color: STATUSLINE_BLUE }}
+            title={snapshot.dir}
+          >
             {snapshot.dir}
           </span>
         )}
 
-        {/* Branch + ahead/behind */}
+        {/* Branch + ahead/behind — statusline cyan */}
         {branch && (
-          <span className="shrink-0 tabular-nums">
+          <span className="shrink-0 tabular-nums" style={{ color: STATUSLINE_CYAN }}>
             {branch}
             {ahead && <span aria-label={`${ahead} ahead`}> ↑{ahead}</span>}
             {behind && <span aria-label={`${behind} behind`}> ↓{behind}</span>}
@@ -321,9 +326,9 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
 
   return (
     <div className={containerClass} style={containerStyle} title={`Session ${session.id}`}>
-      {/* Model */}
+      {/* Model — statusline blue */}
       {modelLabel && (
-        <span className={`shrink-0 ${model ? getModelColorClass(model.family) : ''}`}>
+        <span className="shrink-0" style={{ color: STATUSLINE_BLUE }}>
           {modelLabel}
         </span>
       )}

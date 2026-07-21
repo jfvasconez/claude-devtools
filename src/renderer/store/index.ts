@@ -67,6 +67,12 @@ export function initializeNotificationListeners(): () => void {
   const pendingProjectRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const SESSION_REFRESH_DEBOUNCE_MS = 150;
   const PROJECT_REFRESH_DEBOUNCE_MS = 300;
+  // The session the user is actively looking at (focused pane's active tab /
+  // selectedSessionId) gets a much shorter debounce than background sessions so
+  // its chat window feels near-instant. A small floor is kept for very long
+  // focused sessions to avoid thrashing the full-file re-parse in main.
+  const FOCUSED_SESSION_REFRESH_DEBOUNCE_MS = 75;
+  const FOCUSED_SESSION_REFRESH_DEBOUNCE_LARGE_MS = 200;
   const getBaseProjectId = (projectId: string | null | undefined): string | null => {
     if (!projectId) return null;
     const separatorIndex = projectId.indexOf('::');
@@ -97,8 +103,21 @@ export function initializeNotificationListeners(): () => void {
     const aiGroupCount =
       tabData?.conversation?.totalAIGroups ??
       (state.conversation?.items ?? []).filter((i) => i.type === 'ai').length;
-    const debounceMs =
-      aiGroupCount > 500
+
+    // Is this the session the user is actively viewing? The focused pane's
+    // active tab (getActiveTab) or the global selectedSessionId both count, so
+    // the chat window in front of the user updates fastest while background
+    // sessions in other tabs/panes stay coalesced by the adaptive schedule.
+    const activeTab = state.getActiveTab();
+    const isFocusedSession =
+      state.selectedSessionId === sessionId ||
+      (activeTab?.type === 'session' && activeTab.sessionId === sessionId);
+
+    const debounceMs = isFocusedSession
+      ? aiGroupCount > 500
+        ? FOCUSED_SESSION_REFRESH_DEBOUNCE_LARGE_MS // 200ms floor for huge focused sessions
+        : FOCUSED_SESSION_REFRESH_DEBOUNCE_MS // 75ms — near-instant for the viewed session
+      : aiGroupCount > 500
         ? 1000 // 1s ceiling for very long sessions
         : aiGroupCount > 200
           ? 500 // 500ms for long sessions
