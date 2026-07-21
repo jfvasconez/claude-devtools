@@ -1,17 +1,24 @@
 /**
  * StatusBar - Persistent, editor-style status bar pinned to the bottom of a
  * session pane. Mirrors the owner's Claude Code statusline for the currently-
- * viewed session:
+ * viewed session.
  *
- *   Opus 4.8 (1M context)  ·  Context 47%  ·  Weekly 85% → Jul 23  ·  Session 79% → 1:39am
+ * Two rendering modes:
  *
- *   - model (friendly label derived from the session's assistant messages)
- *   - context-window consumption (%)
- *   - weekly + current-session usage limits (via useUsage → GET /api/usage)
- *   - live terminal-state dot for the current session (wezterm palette)
+ *  1. SNAPSHOT (active sessions): when `session.statusline` is present (written
+ *     by a hook to `${CLAUDE_ROOT}/devtools-state/<sid>.statusline.json`), the
+ *     bar is an EXACT mirror of the owner's live statusline:
  *
- * Session detail comes from the per-tab store slice (no new fetching here);
- * usage is polled by the `useUsage` hook (30s).
+ *       <model>  <dir>  <branch>[ ↑N ↓N ]  ·  Context X%  ·  Weekly Y% → reset  ·  Session Z% → reset
+ *
+ *     Context/Weekly/Session are color-coded by REMAINING % (owner's
+ *     `color_remaining`): >30 green, >10 yellow, else red.
+ *
+ *  2. FALLBACK (non-active/older sessions, no snapshot): the transcript-derived
+ *     model label + context consumption (REMAINING %, 1M-aware) + global
+ *     weekly/session usage via the `useUsage` hook.
+ *
+ * The live terminal-state dot (wezterm palette) is always shown, right-aligned.
  */
 
 import React, { useMemo } from 'react';
@@ -30,11 +37,38 @@ import { useShallow } from 'zustand/react/shallow';
 import type { ModelInfo } from '@shared/utils/modelParser';
 
 /**
- * Nominal context-window size used to render the consumption percentage.
- * Matches the sidebar's ConsumptionBadge "high" heuristic (>150k ≈ 75% here);
- * kept local since the codebase has no single window-size constant.
+ * Statusline snapshot shape (mirrors the hook's JSON; see domain.ts `Session`).
+ */
+interface StatuslineSnapshot {
+  model?: string;
+  dir?: string;
+  branch?: string;
+  ahead?: string;
+  behind?: string;
+  context_pct?: number | null;
+  weekly_pct?: number | null;
+  weekly_reset?: string;
+  session_pct?: number | null;
+  session_reset?: string;
+  ts?: number;
+}
+
+/** Remaining-% → hex color, matching the owner's statusline `color_remaining`. */
+const COLOR_GREEN = '#22c55e';
+const COLOR_YELLOW = '#eab308';
+const COLOR_RED = '#ef4444';
+function colorForRemaining(remaining: number): string {
+  if (remaining > 30) return COLOR_GREEN;
+  if (remaining > 10) return COLOR_YELLOW;
+  return COLOR_RED;
+}
+
+/**
+ * Nominal context-window size used by the fallback path to render consumption.
+ * 1M-context models use a larger window (detected from the raw model id).
  */
 const CONTEXT_WINDOW_TOKENS = 200_000;
+const CONTEXT_WINDOW_TOKENS_1M = 1_000_000;
 
 /**
  * Derive the session's model from its assistant messages (last one wins),
@@ -60,9 +94,6 @@ function useSessionModel(
 /**
  * Map a raw model id + parsed info to a user-friendly label, e.g.
  * "claude-opus-4-8[1m]" → "Opus 4.8 (1M context)".
- * - Title-case the family (opus/sonnet/haiku/fable → Opus/…).
- * - Format the version as "<major>.<minor>" (or just "<major>").
- * - Append " (1M context)" when the raw id carries a 1m marker.
  */
 function friendlyModelLabel(raw: string, info: ModelInfo | null): string {
   const family = info?.family ?? '';
@@ -106,7 +137,10 @@ const Separator = (): React.JSX.Element => (
   </span>
 );
 
-/** A "<label> <util>% → <reset>" usage segment; renders null when window absent. */
+/**
+ * A "<label> <util>% → <reset>" usage segment for the FALLBACK path (global
+ * usage). Colored by REMAINING % (100 - utilization). Renders null when absent.
+ */
 const UsageSegment = ({
   label,
   window,
@@ -118,10 +152,37 @@ const UsageSegment = ({
 }>): React.JSX.Element | null => {
   if (!window) return null;
   const reset = formatReset(window.resets_at);
+  const remaining = 100 - window.utilization;
   return (
-    <span className="shrink-0 tabular-nums" style={{ color: COLOR_TEXT_MUTED }}>
+    <span className="shrink-0 tabular-nums" style={{ color: colorForRemaining(remaining) }}>
       {label} {Math.round(window.utilization)}%{reset && <span aria-hidden> → {reset}</span>}
     </span>
+  );
+};
+
+/**
+ * A snapshot usage segment: "<label> <util>% → <reset>" (reset is already a
+ * display string). Colored by REMAINING %. Hidden when `pct` is null/undefined.
+ */
+const SnapshotUsageSegment = ({
+  label,
+  pct,
+  reset,
+  remaining,
+}: Readonly<{
+  label: string;
+  pct: number | null | undefined;
+  reset?: string;
+  remaining: number;
+}>): React.JSX.Element | null => {
+  if (pct == null) return null;
+  return (
+    <>
+      <Separator />
+      <span className="shrink-0 tabular-nums" style={{ color: colorForRemaining(remaining) }}>
+        {label} {Math.round(pct)}%{reset && <span aria-hidden> → {reset}</span>}
+      </span>
+    </>
   );
 };
 
@@ -139,30 +200,127 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
 
   const { session } = sessionDetail;
 
-  const contextConsumption = session.contextConsumption ?? 0;
-  const contextPercent =
-    contextConsumption > 0
-      ? Math.min((contextConsumption / CONTEXT_WINDOW_TOKENS) * 100, 100)
-      : 0;
-  const contextIsHigh = contextConsumption > 150_000;
-
   // Live status: TRUE terminal state (wezterm hook), colored only when live.
   const liveVisual = getTerminalVisual(
     (session as { terminalState?: TerminalStateInfo }).terminalState
   );
 
+  const snapshot = (session as { statusline?: StatuslineSnapshot }).statusline;
+
+  // Live terminal status element (shared by both modes).
+  const liveStatus = (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {liveVisual ? (
+        <>
+          <span
+            className={`inline-block size-2 rounded-full ${liveVisual.pulse ? 'animate-pulse' : ''}`}
+            style={{ backgroundColor: liveVisual.color }}
+            aria-hidden
+          />
+          <span style={{ color: liveVisual.color }}>{liveVisual.label}</span>
+        </>
+      ) : (
+        <span style={{ color: COLOR_TEXT_MUTED }}>Idle</span>
+      )}
+    </span>
+  );
+
+  const containerClass =
+    'flex h-7 shrink-0 items-center gap-2 overflow-hidden px-3 font-mono text-sm';
+  const containerStyle: React.CSSProperties = {
+    backgroundColor: COLOR_SURFACE_RAISED,
+    borderTop: `1px solid ${COLOR_BORDER_SUBTLE}`,
+    color: COLOR_TEXT_MUTED,
+  };
+
+  // ===========================================================================
+  // SNAPSHOT MODE — exact mirror of the owner's live statusline.
+  // ===========================================================================
+  if (snapshot) {
+    // Snapshot model is already the friendly display name; derive family for
+    // color only (best-effort — a friendly label may not parse).
+    const parsedFamily = snapshot.model ? parseModelString(snapshot.model)?.family : undefined;
+    const modelColorClass = parsedFamily ? getModelColorClass(parsedFamily) : '';
+
+    const branch = snapshot.branch?.trim();
+    const ahead = snapshot.ahead && snapshot.ahead !== '0' ? snapshot.ahead : '';
+    const behind = snapshot.behind && snapshot.behind !== '0' ? snapshot.behind : '';
+
+    const contextPct = snapshot.context_pct; // already REMAINING %
+    const weeklyRemaining = snapshot.weekly_pct == null ? 0 : 100 - snapshot.weekly_pct;
+    const sessionRemaining = snapshot.session_pct == null ? 0 : 100 - snapshot.session_pct;
+
+    return (
+      <div className={containerClass} style={containerStyle} title={`Session ${session.id}`}>
+        {/* Model */}
+        {snapshot.model && (
+          <span className={`shrink-0 ${modelColorClass}`}>{snapshot.model}</span>
+        )}
+
+        {/* Directory (truncates first when the row is tight) */}
+        {snapshot.dir && (
+          <span className="min-w-0 truncate" title={snapshot.dir}>
+            {snapshot.dir}
+          </span>
+        )}
+
+        {/* Branch + ahead/behind */}
+        {branch && (
+          <span className="shrink-0 tabular-nums">
+            {branch}
+            {ahead && <span aria-label={`${ahead} ahead`}> ↑{ahead}</span>}
+            {behind && <span aria-label={`${behind} behind`}> ↓{behind}</span>}
+          </span>
+        )}
+
+        {/* Context (remaining %, color-coded) */}
+        {contextPct != null && (
+          <>
+            <Separator />
+            <span
+              className="shrink-0 tabular-nums"
+              style={{ color: colorForRemaining(contextPct) }}
+            >
+              Context {Math.round(contextPct)}%
+            </span>
+          </>
+        )}
+
+        {/* Weekly + Session usage limits */}
+        <SnapshotUsageSegment
+          label="Weekly"
+          pct={snapshot.weekly_pct}
+          reset={snapshot.weekly_reset}
+          remaining={weeklyRemaining}
+        />
+        <SnapshotUsageSegment
+          label="Session"
+          pct={snapshot.session_pct}
+          reset={snapshot.session_reset}
+          remaining={sessionRemaining}
+        />
+
+        {/* Spacer pushes live status to the right edge */}
+        <div className="ml-auto" />
+        {liveStatus}
+      </div>
+    );
+  }
+
+  // ===========================================================================
+  // FALLBACK MODE — transcript-derived model + context + global usage.
+  // ===========================================================================
+  const contextConsumption = session.contextConsumption ?? 0;
+  const is1M = rawModel ? /1m/i.test(rawModel) : false;
+  const contextWindow = is1M ? CONTEXT_WINDOW_TOKENS_1M : CONTEXT_WINDOW_TOKENS;
+  const consumedPercent =
+    contextConsumption > 0 ? Math.min((contextConsumption / contextWindow) * 100, 100) : 0;
+  const remainingPercent = 100 - consumedPercent;
+
   const modelLabel = rawModel ? friendlyModelLabel(rawModel, model) : null;
 
   return (
-    <div
-      className="flex h-7 shrink-0 items-center gap-2 overflow-hidden px-3 font-mono text-sm"
-      style={{
-        backgroundColor: COLOR_SURFACE_RAISED,
-        borderTop: `1px solid ${COLOR_BORDER_SUBTLE}`,
-        color: COLOR_TEXT_MUTED,
-      }}
-      title={`Session ${session.id}`}
-    >
+    <div className={containerClass} style={containerStyle} title={`Session ${session.id}`}>
       {/* Model */}
       {modelLabel && (
         <span className={`shrink-0 ${model ? getModelColorClass(model.family) : ''}`}>
@@ -170,16 +328,16 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
         </span>
       )}
 
-      {/* Context window consumption */}
+      {/* Context window remaining */}
       {contextConsumption > 0 && (
         <>
           {modelLabel && <Separator />}
           <span
             className="shrink-0 tabular-nums"
-            style={{ color: contextIsHigh ? 'rgb(251, 191, 36)' : COLOR_TEXT_MUTED }}
-            title="Context consumed (compaction-aware) vs 200k window"
+            style={{ color: colorForRemaining(remainingPercent) }}
+            title={`Context remaining (compaction-aware) vs ${is1M ? '1M' : '200k'} window`}
           >
-            Context {contextPercent.toFixed(0)}%
+            Context {remainingPercent.toFixed(0)}%
           </span>
         </>
       )}
@@ -202,22 +360,7 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
 
       {/* Spacer pushes live status to the right edge */}
       <div className="ml-auto" />
-
-      {/* Live terminal status */}
-      <span className="flex shrink-0 items-center gap-1.5">
-        {liveVisual ? (
-          <>
-            <span
-              className={`inline-block size-2 rounded-full ${liveVisual.pulse ? 'animate-pulse' : ''}`}
-              style={{ backgroundColor: liveVisual.color }}
-              aria-hidden
-            />
-            <span style={{ color: liveVisual.color }}>{liveVisual.label}</span>
-          </>
-        ) : (
-          <span style={{ color: COLOR_TEXT_MUTED }}>Idle</span>
-        )}
-      </span>
+      {liveStatus}
     </div>
   );
 };
