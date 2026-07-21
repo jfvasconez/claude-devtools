@@ -55,9 +55,12 @@ interface ActiveSessionFile {
 export class FileWatcher extends EventEmitter {
   private projectsWatcher: fs.FSWatcher | null = null;
   private todosWatcher: fs.FSWatcher | null = null;
+  private stateWatcher: fs.FSWatcher | null = null;
   private retryTimer: NodeJS.Timeout | null = null;
   private projectsPath: string;
   private todosPath: string;
+  /** devtools terminal-state dir (`${CLAUDE_ROOT}/devtools-state`), sibling of projects/ */
+  private statePath: string;
   private dataCache: DataCache;
   private fsProvider: FileSystemProvider;
   private notificationManager: NotificationManager | null = null;
@@ -98,6 +101,9 @@ export class FileWatcher extends EventEmitter {
     super();
     this.projectsPath = projectsPath ?? getProjectsBasePath();
     this.todosPath = todosPath ?? getTodosBasePath();
+    // Terminal-state dir is a sibling of projects/, derived from the same base so
+    // a constructor-injected projectsPath (tests) keeps them aligned.
+    this.statePath = path.join(path.dirname(this.projectsPath), 'devtools-state');
     this.dataCache = dataCache;
     this.fsProvider = fsProvider ?? new LocalFileSystemProvider();
   }
@@ -173,6 +179,11 @@ export class FileWatcher extends EventEmitter {
     if (this.todosWatcher) {
       this.todosWatcher.close();
       this.todosWatcher = null;
+    }
+
+    if (this.stateWatcher) {
+      this.stateWatcher.close();
+      this.stateWatcher = null;
     }
 
     // Clear any pending debounce timers
@@ -329,6 +340,38 @@ export class FileWatcher extends EventEmitter {
     }
   }
 
+  /**
+   * Starts the devtools terminal-state directory watcher.
+   * The dir may not exist yet (no session has written state) — tolerate that and
+   * let the retry timer pick it up once it appears.
+   */
+  private startStateWatcher(): void {
+    if (this.stateWatcher) {
+      return;
+    }
+
+    try {
+      if (!fs.existsSync(this.statePath)) {
+        // devtools-state dir may not exist yet - that's OK, retry later.
+        this.scheduleWatcherRetry();
+        return;
+      }
+
+      this.stateWatcher = fs.watch(this.statePath, (eventType, filename) => {
+        if (filename) {
+          this.handleStateChange(eventType, filename);
+        }
+      });
+      this.attachWatcherRecovery(this.stateWatcher, 'state');
+
+      logger.info(`FileWatcher: Started watching devtools-state at ${this.statePath}`);
+    } catch (error) {
+      logger.error('Error starting devtools-state watcher:', error);
+      this.stateWatcher = null;
+      this.scheduleWatcherRetry();
+    }
+  }
+
   private ensureWatchers(): void {
     if (!this.isWatching || this.fsProvider.type === 'ssh') {
       return;
@@ -336,8 +379,9 @@ export class FileWatcher extends EventEmitter {
 
     this.startProjectsWatcher();
     this.startTodosWatcher();
+    this.startStateWatcher();
 
-    if (!this.projectsWatcher || !this.todosWatcher) {
+    if (!this.projectsWatcher || !this.todosWatcher || !this.stateWatcher) {
       this.scheduleWatcherRetry();
     }
   }
@@ -353,14 +397,23 @@ export class FileWatcher extends EventEmitter {
     }, WATCHER_RETRY_MS);
   }
 
-  private attachWatcherRecovery(watcher: fs.FSWatcher, watcherType: 'projects' | 'todos'): void {
-    watcher.on('error', (error) => {
-      logger.error(`FileWatcher: ${watcherType} watcher error:`, error);
+  private attachWatcherRecovery(
+    watcher: fs.FSWatcher,
+    watcherType: 'projects' | 'todos' | 'state'
+  ): void {
+    const clearRef = (): void => {
       if (watcherType === 'projects') {
         this.projectsWatcher = null;
-      } else {
+      } else if (watcherType === 'todos') {
         this.todosWatcher = null;
+      } else {
+        this.stateWatcher = null;
       }
+    };
+
+    watcher.on('error', (error) => {
+      logger.error(`FileWatcher: ${watcherType} watcher error:`, error);
+      clearRef();
       this.scheduleWatcherRetry();
     });
 
@@ -368,11 +421,7 @@ export class FileWatcher extends EventEmitter {
       if (!this.isWatching) {
         return;
       }
-      if (watcherType === 'projects') {
-        this.projectsWatcher = null;
-      } else {
-        this.todosWatcher = null;
-      }
+      clearRef();
       this.scheduleWatcherRetry();
     });
   }
@@ -785,6 +834,56 @@ export class FileWatcher extends EventEmitter {
       parsedLineCount,
       consumedBytes,
     };
+  }
+
+  /**
+   * Handles file change events in the devtools terminal-state directory.
+   * Each file is `<sessionId>.json`; a change means a session's live terminal
+   * state changed and the session list needs to refresh so status dots update.
+   */
+  private handleStateChange(eventType: string, filename: string): void {
+    try {
+      // Only handle per-session JSON state files.
+      if (!filename.endsWith('.json')) {
+        return;
+      }
+
+      // Debounce rapid writes to the same state file.
+      this.debounce(`state/${filename}`, () => this.processStateChange(eventType, filename));
+    } catch (error) {
+      logger.error('Error handling devtools-state change:', error);
+    }
+  }
+
+  /**
+   * Process a debounced devtools-state change by emitting a `file-change` event —
+   * the same refresh signal the projects watcher uses, so the renderer re-fetches
+   * sessions (and their terminalState) without a new event channel.
+   */
+  private async processStateChange(eventType: string, filename: string): Promise<void> {
+    const sessionId = path.basename(filename, '.json');
+    const fullPath = path.join(this.statePath, filename);
+    const fileExists = await this.fsProvider.exists(fullPath);
+
+    let changeType: FileChangeEvent['type'];
+    if (eventType === 'rename') {
+      changeType = fileExists ? 'add' : 'unlink';
+    } else {
+      changeType = 'change';
+    }
+
+    // No projectId (state files are keyed only by sessionId) — mirrors the
+    // todo-change event shape. Emitted on the file-change channel so the existing
+    // session-refresh path handles it.
+    const event: FileChangeEvent = {
+      type: changeType,
+      path: fullPath,
+      sessionId,
+      isSubagent: false,
+    };
+
+    this.emit('file-change', event);
+    logger.info(`FileWatcher: ${changeType} terminal-state - ${filename}`);
   }
 
   /**

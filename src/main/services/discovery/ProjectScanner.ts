@@ -61,6 +61,13 @@ const logger = createLogger('Discovery:ProjectScanner');
 const SEARCH_PROJECT_CACHE_TTL_MS = 30_000;
 
 /**
+ * How long to reuse the cached devtools terminal-state map (ms). Kept short so a
+ * single listing pass reads the dir once while staleness never exceeds one tick;
+ * the FileWatcher pushes a refresh on any state file change for live updates.
+ */
+const TERMINAL_STATE_CACHE_TTL_MS = 1_000;
+
+/**
  * Derive the computed session status from the (already staleness-gated) isOngoing
  * flag and the raw detection booleans from analyzeSessionFileMetadata.
  * Precedence, first match wins: ongoing > error > waiting > interrupted > complete.
@@ -94,6 +101,16 @@ export class ProjectScanner {
 
   /** Cached project list for search — avoids re-scanning disk on every query */
   private searchProjectCache: { projects: Project[]; timestamp: number } | null = null;
+
+  /**
+   * Cached terminal-state map (sessionId → info) read from the devtools-state
+   * dir. Short TTL so a single listing pass reads the whole dir once rather than
+   * a stat per session; live updates arrive via the FileWatcher refresh signal.
+   */
+  private terminalStateCache: {
+    map: Map<string, { state: string; ts: number; cwd?: string }>;
+    timestamp: number;
+  } | null = null;
 
   // Delegated services
   private readonly fsProvider: FileSystemProvider;
@@ -753,10 +770,11 @@ export class ProjectScanner {
       });
     }
 
-    // Check for subagents and load task list data in parallel
-    const [hasSubagents, todoData] = await Promise.all([
+    // Check for subagents, load task list data, and read terminal state in parallel
+    const [hasSubagents, todoData, terminalState] = await Promise.all([
       this.subagentLocator.hasSubagents(projectId, sessionId),
       this.loadTodoData(sessionId),
+      this.getTerminalStateForSession(sessionId),
     ]);
     const metadataLevel: SessionMetadataLevel = 'deep';
     const firstMessageTimestampMs = this.parseTimestampMs(metadata.firstUserMessage?.timestamp);
@@ -793,6 +811,7 @@ export class ProjectScanner {
       contextConsumption: metadata.contextConsumption,
       compactionCount: metadata.compactionCount,
       phaseBreakdown: metadata.phaseBreakdown,
+      terminalState,
     };
   }
 
@@ -855,6 +874,8 @@ export class ProjectScanner {
     // raw parse result. Best-effort — 'waiting' still works when the parse succeeded.
     const status = computeSessionStatus(metadata.isOngoing, metadata);
 
+    const terminalState = await this.getTerminalStateForSession(sessionId);
+
     return {
       id: sessionId,
       projectId,
@@ -867,6 +888,7 @@ export class ProjectScanner {
       messageCount: metadata.messageCount,
       metadataLevel,
       status,
+      terminalState,
     };
   }
 
@@ -980,6 +1002,73 @@ export class ProjectScanner {
     } catch (error) {
       // Log but continue - task list data is non-critical
       logger.debug(`Failed to load task list data for session ${sessionId}:`, error);
+      return undefined;
+    }
+  }
+
+  // ===========================================================================
+  // Terminal State (devtools-state sibling dir)
+  // ===========================================================================
+
+  /**
+   * Loads the terminal-state map from `${CLAUDE_ROOT}/devtools-state/` (a sibling
+   * of projects/). Reads the whole dir once and memoizes it with a short TTL so a
+   * listing pass performs a single directory read rather than a stat per session.
+   *
+   * Fully defensive: a missing dir, unreadable file, or unparseable JSON yields an
+   * empty/partial map — this never throws.
+   */
+  private async loadTerminalStates(): Promise<
+    Map<string, { state: string; ts: number; cwd?: string }>
+  > {
+    const now = Date.now();
+    if (this.terminalStateCache && now - this.terminalStateCache.timestamp < TERMINAL_STATE_CACHE_TTL_MS) {
+      return this.terminalStateCache.map;
+    }
+
+    const map = new Map<string, { state: string; ts: number; cwd?: string }>();
+    try {
+      const stateDir = path.join(path.dirname(this.projectsDir), 'devtools-state');
+      const entries = await this.fsProvider.readdir(stateDir);
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        const sessionId = entry.name.replace(/\.json$/, '');
+        try {
+          const content = await this.fsProvider.readFile(path.join(stateDir, entry.name));
+          const parsed = JSON.parse(content) as {
+            state?: unknown;
+            ts?: unknown;
+            cwd?: unknown;
+          };
+          if (typeof parsed?.state === 'string' && typeof parsed?.ts === 'number') {
+            map.set(sessionId, {
+              state: parsed.state,
+              ts: parsed.ts,
+              cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined,
+            });
+          }
+        } catch {
+          // Ignore unreadable/unparseable state files.
+        }
+      }
+    } catch {
+      // devtools-state dir may not exist yet — treat as "no terminal state".
+    }
+
+    this.terminalStateCache = { map, timestamp: now };
+    return map;
+  }
+
+  /**
+   * Returns the parsed terminal state for a session, or undefined when absent.
+   */
+  private async getTerminalStateForSession(
+    sessionId: string
+  ): Promise<{ state: string; ts: number; cwd?: string } | undefined> {
+    try {
+      const map = await this.loadTerminalStates();
+      return map.get(sessionId);
+    } catch {
       return undefined;
     }
   }

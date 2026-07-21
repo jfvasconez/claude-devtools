@@ -119,6 +119,13 @@ export interface Session {
   compactionCount?: number;
   /** Per-phase token breakdown for tooltip display */
   phaseBreakdown?: PhaseTokenBreakdown[];
+  /**
+   * Live terminal state written by an external hook to
+   * `${CLAUDE_ROOT}/devtools-state/<sessionId>.json` (sibling of projects/).
+   * `state` ∈ ready|working|attention|done|default; `ts` is unix SECONDS.
+   * Undefined when no state file exists for the session.
+   */
+  terminalState?: { state: string; ts: number; cwd?: string };
 }
 
 /**
