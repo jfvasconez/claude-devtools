@@ -8,12 +8,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useStore } from '@renderer/store';
-import {
-  getNonEmptyCategories,
-  groupSessionsByDate,
-  separatePinnedSessions,
-} from '@renderer/utils/dateGrouping';
+import { getNonEmptyCategories, separatePinnedSessions } from '@renderer/utils/dateGrouping';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { differenceInDays, isToday, isYesterday } from 'date-fns';
 import {
   ArrowDownWideNarrow,
   Calendar,
@@ -30,7 +27,44 @@ import { useShallow } from 'zustand/react/shallow';
 import { SessionItem } from './SessionItem';
 
 import type { Session } from '@renderer/types/data';
-import type { DateCategory } from '@renderer/types/tabs';
+import type { DateCategory, DateGroupedSessions as DateGroupedSessionsMap } from '@renderer/types/tabs';
+
+/**
+ * Timestamp basis for date grouping/sorting: the FIRST message (createdAt).
+ * Falls back to updatedAt (then 0) if createdAt is somehow missing.
+ */
+function firstMessageTimestamp(session: Session): number {
+  return session.createdAt ?? session.updatedAt ?? 0;
+}
+
+/**
+ * Group sessions by the calendar day of their FIRST message (createdAt), local time.
+ * Mirrors the category ordering used elsewhere (Today / Yesterday / Previous 7 Days / Older)
+ * but keys off createdAt instead of updatedAt. Preserves the input order within each group,
+ * so callers should pre-sort by createdAt descending.
+ */
+function groupSessionsByFirstMessage(sessions: Session[]): DateGroupedSessionsMap {
+  const now = new Date();
+
+  return sessions.reduce<DateGroupedSessionsMap>(
+    (acc, session) => {
+      const sessionDate = new Date(firstMessageTimestamp(session));
+
+      if (isToday(sessionDate)) {
+        acc.Today.push(session);
+      } else if (isYesterday(sessionDate)) {
+        acc.Yesterday.push(session);
+      } else if (differenceInDays(now, sessionDate) <= 7) {
+        acc['Previous 7 Days'].push(session);
+      } else {
+        acc.Older.push(session);
+      }
+
+      return acc;
+    },
+    { Today: [], Yesterday: [], 'Previous 7 Days': [], Older: [] }
+  );
+}
 
 // Virtual list item types
 type VirtualItem =
@@ -120,8 +154,21 @@ export const DateGroupedSessions = (): React.JSX.Element => {
     [visibleSessions, pinnedSessionIds]
   );
 
-  // Group only unpinned sessions by date
-  const groupedSessions = useMemo(() => groupSessionsByDate(unpinnedSessions), [unpinnedSessions]);
+  // Order unpinned sessions by first message (createdAt) descending, then group by the
+  // calendar day of that first message. groupSessionsByFirstMessage preserves input order
+  // within each day, so this yields newest-first ordering inside every group.
+  const unpinnedByFirstMessage = useMemo(
+    () =>
+      [...unpinnedSessions].sort(
+        (a, b) => firstMessageTimestamp(b) - firstMessageTimestamp(a)
+      ),
+    [unpinnedSessions]
+  );
+
+  const groupedSessions = useMemo(
+    () => groupSessionsByFirstMessage(unpinnedByFirstMessage),
+    [unpinnedByFirstMessage]
+  );
 
   // Get non-empty categories in display order
   const nonEmptyCategories = useMemo(
