@@ -50,7 +50,8 @@ export const TextItem: React.FC<TextItemProps> = React.memo(function TextItem({
       highlightStyle={highlightStyle}
       notificationDotColor={notificationDotColor}
     >
-      <MarkdownViewer content={fullContent} maxHeight="max-h-96" />
+      {/* Empty maxHeight => no fixed cap; Claude messages grow to full content height. */}
+      <MarkdownViewer content={fullContent} maxHeight="" />
     </BaseItem>
   );
 });
