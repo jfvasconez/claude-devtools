@@ -7,6 +7,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { getTerminalVisual, type TerminalStateInfo } from '@renderer/constants/sessionStatus';
 import { useStore } from '@renderer/store';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { formatDistanceToNowStrict } from 'date-fns';
@@ -264,7 +265,11 @@ export const SessionItem = React.memo(function SessionItem({
               className="size-3.5 shrink-0 accent-blue-500"
             />
           )}
-          <LiveStatusDot status={session.status} isOngoing={session.isOngoing} />
+          <LiveStatusDot
+            visual={getTerminalVisual(
+              (session as { terminalState?: TerminalStateInfo }).terminalState
+            )}
+          />
           {isPinned && <Pin className="size-2.5 shrink-0 text-blue-400" />}
           {isHidden && <EyeOff className="size-2.5 shrink-0 text-zinc-500" />}
           <span

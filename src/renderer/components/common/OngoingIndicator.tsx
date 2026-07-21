@@ -14,35 +14,36 @@
 
 import React from 'react';
 
-import { getLiveStatusVisual, type SessionStatus } from '@renderer/constants/sessionStatus';
+import { type TerminalVisual } from '@renderer/constants/sessionStatus';
 
 interface LiveStatusDotProps {
-  /** Status from the session; undefined tolerated (older cached data). */
-  status?: SessionStatus | string;
-  /** Legacy flag used to infer 'ongoing' when status is absent. */
-  isOngoing?: boolean;
+  /**
+   * Resolved terminal visual (from `getTerminalVisual(session.terminalState)`),
+   * or null/undefined when the session is not live in the terminal. The dot
+   * renders nothing in that case, so callers can pass the result directly.
+   */
+  visual: TerminalVisual | null | undefined;
   /** Dot size variant. */
   size?: 'sm' | 'md';
 }
 
 /**
- * LiveStatusDot - a compact wezterm-palette dot for a session's live status.
+ * LiveStatusDot - a compact wezterm-palette dot for a session's TRUE terminal
+ * state (from the wezterm hook), not the transcript-derived status.
  *
- * - working (ongoing) → amber, pulsing
- * - waiting           → purple, static
- * - error             → red, static
- * - complete / interrupted / unknown-not-live → renders nothing (null)
+ * - working   → amber, pulsing
+ * - attention → purple, static
+ * - ready     → blue, static
+ * - done      → green, static
+ * - ended / stale / missing (null visual) → renders nothing
  *
- * The color/label/pulse decision lives entirely in `getLiveStatusVisual`
- * (the shared wezterm palette). Undefined status falls back gracefully via
- * `resolveSessionStatus`, so older cached sessions never crash.
+ * The color/label/pulse decision lives entirely in `getTerminalVisual` (the
+ * shared wezterm palette); this component only renders the resolved visual.
  */
 export const LiveStatusDot = ({
-  status,
-  isOngoing = false,
+  visual,
   size = 'sm',
 }: Readonly<LiveStatusDotProps>): React.JSX.Element | null => {
-  const visual = getLiveStatusVisual(status, isOngoing);
   if (!visual) return null;
 
   const dotSize = size === 'sm' ? 'h-2 w-2' : 'h-2.5 w-2.5';
