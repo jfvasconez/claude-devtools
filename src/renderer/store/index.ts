@@ -73,6 +73,13 @@ export function initializeNotificationListeners(): () => void {
   // focused sessions to avoid thrashing the full-file re-parse in main.
   const FOCUSED_SESSION_REFRESH_DEBOUNCE_MS = 75;
   const FOCUSED_SESSION_REFRESH_DEBOUNCE_LARGE_MS = 200;
+  // When a session is being kept live by incremental `session-append` deltas, the
+  // parallel file-change-driven full refetch is redundant (and pays the very re-parse
+  // the append path exists to avoid). If an append was applied within this window, skip
+  // the scheduled full refresh; if deltas stop or a gap forces a fallback, the refresh
+  // resumes naturally on the next file-change.
+  const APPEND_REFRESH_GRACE_MS = 1500;
+  const lastAppendAppliedAt = new Map<string, number>();
   const getBaseProjectId = (projectId: string | null | undefined): string | null => {
     if (!projectId) return null;
     const separatorIndex = projectId.indexOf('::');
@@ -127,6 +134,10 @@ export function initializeNotificationListeners(): () => void {
 
     const timer = setTimeout(() => {
       pendingSessionRefreshTimers.delete(key);
+      // Skip the full refetch if the live append path already keeps this session current.
+      if (Date.now() - (lastAppendAppliedAt.get(sessionId) ?? 0) < APPEND_REFRESH_GRACE_MS) {
+        return;
+      }
       const latestState = useStore.getState();
       void latestState.refreshSessionInPlace(projectId, sessionId);
     }, debounceMs);
@@ -306,6 +317,35 @@ export function initializeNotificationListeners(): () => void {
           // Use refreshSessionInPlace to avoid flickering and preserve UI state
           scheduleSessionRefresh(refreshProjectId, sessionIdToRefresh);
         }
+      }
+    });
+    if (typeof cleanup === 'function') {
+      cleanupFns.push(cleanup);
+    }
+  }
+
+  // Listen for incremental session-append deltas (open-session live updates).
+  // Applied in place with no getSessionDetail re-fetch; on any inconsistency we fall
+  // back to the existing full-refresh path.
+  if (api.onSessionAppend) {
+    const cleanup = api.onSessionAppend((event) => {
+      if (!event?.sessionId) {
+        return;
+      }
+      const handled = useStore.getState().applySessionAppend(event);
+      if (handled) {
+        lastAppendAppliedAt.set(event.sessionId, Date.now());
+        return;
+      }
+      // Fallback: gap/overlap, session not loaded, or malformed payload → full refetch
+      // via the existing debounced path (which no-ops if the session isn't viewed).
+      const state = useStore.getState();
+      const sessionTab = state
+        .getAllPaneTabs()
+        .find((t) => t.type === 'session' && t.sessionId === event.sessionId);
+      const projectId = sessionTab?.projectId ?? event.projectId ?? state.selectedProjectId;
+      if (projectId) {
+        scheduleSessionRefresh(projectId, event.sessionId);
       }
     });
     if (typeof cleanup === 'function') {

@@ -298,12 +298,12 @@ async function handleGetSessionDetail(
     // Register the streaming baseline so the SessionTailer emits `session-append`
     // deltas from exactly this byte offset (open-session live updates).
     if (tailOffset !== undefined) {
-      getActiveSessionTailer()?.setBaseline(
-        safeSessionId,
-        sessionFilePath,
-        tailOffset,
-        safeProjectId
-      );
+      const tailer = getActiveSessionTailer();
+      tailer?.setBaseline(safeSessionId, sessionFilePath, tailOffset, safeProjectId);
+      // Seed the tailer's message cache (sessionDetail here always carries the full
+      // parsed messages + processes, whether cache-hit or freshly built) so the first
+      // append rebuilds chunks in-memory — no disk read, no re-parse.
+      tailer?.primeMessages(safeSessionId, sessionDetail.messages, sessionDetail.processes);
     }
 
     // The fingerprint travels with the payload so the renderer can cache it

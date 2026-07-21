@@ -13,7 +13,7 @@
  */
 
 import { type Session, type SessionMetrics } from './domain';
-import { type ToolUseResultData } from './jsonl';
+import { type ChatHistoryEntry, type ToolUseResultData } from './jsonl';
 import { type ParsedMessage, type ToolCall, type ToolResult } from './messages';
 
 // =============================================================================
@@ -467,6 +467,42 @@ export interface SubagentDetail {
 // =============================================================================
 // Utility Types
 // =============================================================================
+
+/**
+ * Payload for the `session-append` event (SSE + Electron IPC).
+ *
+ * Emitted only for baselined (open) sessions on clean forward growth. Carries the
+ * newly-appended raw entries (for gap-detection/observability) AND the fully-rebuilt
+ * `chunks` array — the SAME shape `getSessionDetail` returns — so the renderer applies
+ * it identically to a full detail payload, with NO re-fetch and NO re-parse.
+ */
+export interface SessionAppendEvent {
+  sessionId: string;
+  /** Project id when known (state-file changes carry none — those are never tailed). */
+  projectId?: string;
+  /**
+   * Raw parsed JSONL line objects for this delta, in file order (the direct
+   * `JSON.parse` of each complete appended line). The renderer does not transform
+   * these — it consumes `chunks` — but they are kept for gap-detection/debugging.
+   */
+  entries: ChatHistoryEntry[];
+  /**
+   * FULL rebuilt chunk array (all messages seen so far), identical in shape to
+   * `SessionDetail.chunks`. Rebuilt in-memory by running the existing ChunkBuilder
+   * over the tailer's cached parsed-message list — no disk read, no re-JSON.parse of
+   * previously-seen entries. The renderer runs this through
+   * `incrementalUpdateConversation` exactly as it does a full refresh.
+   */
+  chunks: Chunk[];
+  /**
+   * Byte offset (complete-line boundary) this delta STARTS at. Equals the previous
+   * `tailOffset` (or the `getSessionDetail` baseline for the first delta). The renderer
+   * compares this against its stored baseline to detect a gap/overlap and refetch.
+   */
+  baseOffset: number;
+  /** Byte offset (complete-line boundary) AFTER this delta. The renderer's new baseline. */
+  tailOffset: number;
+}
 
 /**
  * File watching event.
