@@ -137,10 +137,23 @@ export interface CompactChunk extends BaseChunk {
 }
 
 /**
- * A chunk can be either a user input, AI response, system output, or compact boundary.
+ * Notification chunk - an auto-injected background-task / agent-completion event
+ * (`<task-notification>`). Rendered as a muted, centered system divider, NOT a
+ * user bubble.
+ */
+export interface NotificationChunk extends BaseChunk {
+  chunkType: 'notification';
+  message: ParsedMessage;
+  /** Concise display label extracted from the notification payload. */
+  label: string;
+}
+
+/**
+ * A chunk can be either a user input, AI response, system output, compact
+ * boundary, or a background-task notification.
  * This discriminated union enables separate visualization and processing.
  */
-export type Chunk = UserChunk | AIChunk | SystemChunk | CompactChunk;
+export type Chunk = UserChunk | AIChunk | SystemChunk | CompactChunk | NotificationChunk;
 
 /**
  * Tool execution with timing information.
@@ -375,13 +388,22 @@ export interface EnhancedCompactChunk extends CompactChunk {
 }
 
 /**
- * Enhanced chunk can be user, AI, system, or compact type.
+ * Enhanced notification chunk with additional metadata.
+ */
+export interface EnhancedNotificationChunk extends NotificationChunk {
+  /** Raw messages for debug sidebar */
+  rawMessages: ParsedMessage[];
+}
+
+/**
+ * Enhanced chunk can be user, AI, system, compact, or notification type.
  */
 export type EnhancedChunk =
   | EnhancedUserChunk
   | EnhancedAIChunk
   | EnhancedSystemChunk
-  | EnhancedCompactChunk;
+  | EnhancedCompactChunk
+  | EnhancedNotificationChunk;
 
 // =============================================================================
 // Session Detail (complete parsed session)
@@ -569,4 +591,11 @@ export function isSystemChunk(chunk: Chunk | EnhancedChunk): chunk is SystemChun
  */
 export function isCompactChunk(chunk: Chunk | EnhancedChunk): chunk is CompactChunk {
   return 'chunkType' in chunk && chunk.chunkType === 'compact';
+}
+
+/**
+ * Type guard to check if a chunk is a NotificationChunk.
+ */
+export function isNotificationChunk(chunk: Chunk | EnhancedChunk): chunk is NotificationChunk {
+  return 'chunkType' in chunk && chunk.chunkType === 'notification';
 }

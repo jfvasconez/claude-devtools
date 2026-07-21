@@ -10,6 +10,7 @@ import {
 import { AIChatGroup } from './AIChatGroup';
 import { CompactBoundary } from './CompactBoundary';
 import { SystemChatGroup } from './SystemChatGroup';
+import { TaskNotificationDivider } from './TaskNotificationDivider';
 import { UserChatGroup } from './UserChatGroup';
 
 import type { ChatItem } from '@renderer/types/groups';
@@ -124,6 +125,8 @@ const ChatHistoryItemInner = ({
     }
     case 'compact':
       return <CompactBoundary compactGroup={item.group} />;
+    case 'notification':
+      return <TaskNotificationDivider notificationGroup={item.group} />;
     default:
       return null;
   }

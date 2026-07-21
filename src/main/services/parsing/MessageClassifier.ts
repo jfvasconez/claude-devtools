@@ -13,6 +13,7 @@ import {
   isParsedCompactMessage,
   isParsedHardNoiseMessage,
   isParsedSystemChunkMessage,
+  isParsedTaskNotificationMessage,
   isParsedUserChunkMessage,
   type MessageCategory,
   type ParsedMessage,
@@ -48,6 +49,12 @@ function categorizeMessage(message: ParsedMessage): MessageCategory {
   // Check compact summary (before system/user to catch it early)
   if (isParsedCompactMessage(message)) {
     return 'compact';
+  }
+
+  // Check auto-injected background-task notifications (before user, so they are
+  // never mistaken for a "You" bubble)
+  if (isParsedTaskNotificationMessage(message)) {
+    return 'notification';
   }
 
   // Check system (command output)

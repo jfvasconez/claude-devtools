@@ -20,6 +20,13 @@ const LOCAL_COMMAND_CAVEAT_TAG = '<local-command-caveat>';
 /** System reminder wrapper tag */
 const SYSTEM_REMINDER_TAG = '<system-reminder>';
 
+/**
+ * Task-notification wrapper tag. Auto-injected background-task / agent-completion
+ * events arrive as `type: "user"` entries whose STRING content starts with this
+ * tag. They are NOT genuine user input and must not render as "You" bubbles.
+ */
+export const TASK_NOTIFICATION_TAG = '<task-notification>';
+
 // =============================================================================
 // Empty Output Tags
 // =============================================================================

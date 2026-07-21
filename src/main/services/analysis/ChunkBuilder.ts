@@ -48,6 +48,7 @@ import { classifyMessages } from '../parsing/MessageClassifier';
 import {
   buildAIChunkFromBuffer,
   buildCompactChunk,
+  buildNotificationChunk,
   buildSystemChunk,
   buildUserChunk,
 } from './ChunkFactory';
@@ -108,6 +109,15 @@ export class ChunkBuilder {
             aiBuffer = [];
           }
           chunks.push(buildCompactChunk(message));
+          break;
+
+        case 'notification':
+          // Flush any buffered AI messages first
+          if (aiBuffer.length > 0) {
+            chunks.push(buildAIChunkFromBuffer(aiBuffer, subagents, messages));
+            aiBuffer = [];
+          }
+          chunks.push(buildNotificationChunk(message));
           break;
 
         case 'user':

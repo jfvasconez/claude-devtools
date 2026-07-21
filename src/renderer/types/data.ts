@@ -35,6 +35,7 @@ export type {
   EnhancedAIChunk,
   EnhancedChunk,
   EnhancedCompactChunk,
+  EnhancedNotificationChunk,
   EnhancedSystemChunk,
   EnhancedUserChunk,
   Process,
@@ -84,6 +85,7 @@ import type {
   Chunk,
   EnhancedChunk,
   EnhancedCompactChunk,
+  EnhancedNotificationChunk,
   EnhancedSystemChunk,
   EnhancedUserChunk,
   ParsedMessage,
@@ -117,6 +119,15 @@ export function isEnhancedCompactChunk(
   chunk: Chunk | EnhancedChunk
 ): chunk is EnhancedCompactChunk {
   return 'chunkType' in chunk && chunk.chunkType === 'compact' && 'rawMessages' in chunk;
+}
+
+/**
+ * Type guard to check if a chunk is an EnhancedNotificationChunk.
+ */
+export function isEnhancedNotificationChunk(
+  chunk: Chunk | EnhancedChunk
+): chunk is EnhancedNotificationChunk {
+  return 'chunkType' in chunk && chunk.chunkType === 'notification' && 'rawMessages' in chunk;
 }
 
 /**
