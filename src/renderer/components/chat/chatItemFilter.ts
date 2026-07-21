@@ -83,7 +83,9 @@ export function toolNameToFilterType(name: string): FilterType {
     case 'Write':
       return 'write';
     case 'Task':
+    case 'Agent':
     case 'TaskOutput':
+    case 'AgentOutput':
       return 'task';
     case 'WebFetch':
       return 'webfetch';
