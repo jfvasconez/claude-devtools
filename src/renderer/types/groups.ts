@@ -388,7 +388,22 @@ export interface NotificationGroup {
 }
 
 /**
- * Chat item - can be user, system, ai, compact, or notification.
+ * Shell Group - an interactive `!` shell command and its captured output.
+ * Rendered as a terminal-style command block, NOT a "You" bubble.
+ */
+export interface ShellGroup {
+  id: string;
+  timestamp: Date;
+  /** The command text (contents of `<bash-input>`). */
+  command: string;
+  /** Captured stdout. */
+  stdout: string;
+  /** Captured stderr. */
+  stderr: string;
+}
+
+/**
+ * Chat item - can be user, system, ai, compact, notification, or shell.
  * These are INDEPENDENT items in a flat list, not paired turns.
  */
 export type ChatItem =
@@ -396,7 +411,8 @@ export type ChatItem =
   | { type: 'system'; group: SystemGroup }
   | { type: 'ai'; group: AIGroup }
   | { type: 'compact'; group: CompactGroup }
-  | { type: 'notification'; group: NotificationGroup };
+  | { type: 'notification'; group: NotificationGroup }
+  | { type: 'shell'; group: ShellGroup };
 
 /**
  * Session conversation as a flat list of independent chat items.

@@ -41,7 +41,8 @@ export type MessageCategory =
   | 'hardNoise'
   | 'ai'
   | 'compact'
-  | 'notification';
+  | 'notification'
+  | 'shell';
 
 // =============================================================================
 // Project & Session Types

@@ -149,11 +149,35 @@ export interface NotificationChunk extends BaseChunk {
 }
 
 /**
+ * Shell-command chunk - an interactive `!` shell command and its captured
+ * output. Merges the `<bash-input>` command entry with the immediately-following
+ * `<bash-stdout>`/`<bash-stderr>` output entries into a single terminal-style
+ * block, NOT a user bubble.
+ */
+export interface ShellCommandChunk extends BaseChunk {
+  chunkType: 'shell';
+  /** The `<bash-input>` command message (source of the chunk). */
+  message: ParsedMessage;
+  /** The command text (contents of `<bash-input>`, tags stripped, trimmed). */
+  command: string;
+  /** Captured stdout (concatenated `<bash-stdout>` blocks, trimmed). */
+  stdout: string;
+  /** Captured stderr (concatenated `<bash-stderr>` blocks, trimmed). */
+  stderr: string;
+}
+
+/**
  * A chunk can be either a user input, AI response, system output, compact
- * boundary, or a background-task notification.
+ * boundary, a background-task notification, or a shell command.
  * This discriminated union enables separate visualization and processing.
  */
-export type Chunk = UserChunk | AIChunk | SystemChunk | CompactChunk | NotificationChunk;
+export type Chunk =
+  | UserChunk
+  | AIChunk
+  | SystemChunk
+  | CompactChunk
+  | NotificationChunk
+  | ShellCommandChunk;
 
 /**
  * Tool execution with timing information.
@@ -396,14 +420,23 @@ export interface EnhancedNotificationChunk extends NotificationChunk {
 }
 
 /**
- * Enhanced chunk can be user, AI, system, compact, or notification type.
+ * Enhanced shell-command chunk with additional metadata.
+ */
+export interface EnhancedShellCommandChunk extends ShellCommandChunk {
+  /** Raw messages for debug sidebar (command + any merged output entries). */
+  rawMessages: ParsedMessage[];
+}
+
+/**
+ * Enhanced chunk can be user, AI, system, compact, notification, or shell type.
  */
 export type EnhancedChunk =
   | EnhancedUserChunk
   | EnhancedAIChunk
   | EnhancedSystemChunk
   | EnhancedCompactChunk
-  | EnhancedNotificationChunk;
+  | EnhancedNotificationChunk
+  | EnhancedShellCommandChunk;
 
 // =============================================================================
 // Session Detail (complete parsed session)
@@ -598,4 +631,11 @@ export function isCompactChunk(chunk: Chunk | EnhancedChunk): chunk is CompactCh
  */
 export function isNotificationChunk(chunk: Chunk | EnhancedChunk): chunk is NotificationChunk {
   return 'chunkType' in chunk && chunk.chunkType === 'notification';
+}
+
+/**
+ * Type guard to check if a chunk is a ShellCommandChunk.
+ */
+export function isShellCommandChunk(chunk: Chunk | EnhancedChunk): chunk is ShellCommandChunk {
+  return 'chunkType' in chunk && chunk.chunkType === 'shell';
 }
