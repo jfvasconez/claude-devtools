@@ -408,6 +408,13 @@ export interface SessionDetail {
    * underlying file hasn't changed since the last successful fetch.
    */
   fingerprint?: string;
+  /**
+   * Byte length of the session file read to build this payload. It is the baseline for
+   * incremental streaming: the renderer stores it and the SessionTailer emits
+   * `session-append` deltas starting from exactly this offset (no gap/overlap).
+   * Attached by the `getSessionDetail` HTTP route.
+   */
+  tailOffset?: number;
 }
 
 /**

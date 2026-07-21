@@ -154,9 +154,22 @@ export function registerSessionRoutes(app: FastifyInstance, services: HttpServic
         const safeSessionId = validatedSession.value!;
         const cacheKey = DataCache.buildKey(safeProjectId, safeSessionId);
 
+        const sessionPath = services.projectScanner.getSessionPath(safeProjectId, safeSessionId);
+
         // Check cache first
         let sessionDetail = services.dataCache.get(cacheKey);
         if (sessionDetail) {
+          // Re-arm the tailer even on a cache hit: it may have been evicted (LRU) or
+          // never seen this session. Cache is invalidated on file-change, so the cached
+          // tailOffset still reflects the on-disk baseline.
+          if (services.sessionTailer && typeof sessionDetail.tailOffset === 'number') {
+            services.sessionTailer.setBaseline(
+              safeSessionId,
+              sessionPath,
+              sessionDetail.tailOffset,
+              safeProjectId
+            );
+          }
           return sessionDetail;
         }
 
@@ -195,6 +208,25 @@ export function registerSessionRoutes(app: FastifyInstance, services: HttpServic
           parsedSession.messages,
           subagents
         );
+
+        // Establish the streaming baseline: the byte length read to build this payload.
+        // Re-stat after the full parse to capture any bytes written during parsing
+        // (mirrors FileWatcher's append-detection). The SessionTailer then emits
+        // `session-append` deltas from exactly this offset — no re-fetch, no re-parse.
+        try {
+          const fsProvider = services.projectScanner.getFileSystemProvider();
+          const stats = await fsProvider.stat(sessionPath);
+          sessionDetail.tailOffset = stats.size;
+          services.sessionTailer?.setBaseline(
+            safeSessionId,
+            sessionPath,
+            stats.size,
+            safeProjectId
+          );
+        } catch (err) {
+          // Non-fatal: without a baseline the session just falls back to file-change refetches.
+          logger.error(`Failed to set tail baseline for ${safeSessionId}:`, err);
+        }
 
         // Cache the result
         services.dataCache.set(cacheKey, sessionDetail);
