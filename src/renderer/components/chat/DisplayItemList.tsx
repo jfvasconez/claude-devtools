@@ -21,16 +21,22 @@ import { TextItem } from './items/TextItem';
 import { ThinkingItem } from './items/ThinkingItem';
 import { MarkdownViewer } from './viewers/MarkdownViewer';
 
-import { displayItemFilterType } from './chatItemFilter';
+import { displayItemFilterType, isItemDefaultCollapsed } from './chatItemFilter';
 
 import type { AIGroupDisplayItem } from '@renderer/types/groups';
 import type { TriggerColor } from '@shared/constants/triggerColors';
 
 interface DisplayItemListProps {
   items: AIGroupDisplayItem[];
-  onItemClick: (itemId: string) => void;
-  /** Item IDs that are explicitly COLLAPSED. Default presentation is expanded. */
+  /**
+   * Toggle an item's expansion. `defaultExpanded` is the item's per-type default and lets
+   * the toggle resolve the current effective state before flipping it.
+   */
+  onItemClick: (itemId: string, defaultExpanded: boolean) => void;
+  /** Item IDs that are explicitly COLLAPSED (override an expanded-by-default item). */
   collapsedItemIds: Set<string>;
+  /** Item IDs that are explicitly EXPANDED (override a collapsed-by-default item). */
+  expandedItemIds: Set<string>;
   /**
    * Filter-type strings that are hidden. Items of these types are skipped WITHOUT
    * changing the iteration index, so item keys / collapse state stay stable.
@@ -73,6 +79,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   items,
   onItemClick,
   collapsedItemIds,
+  expandedItemIds,
   hiddenFilterTypes,
   aiGroupId,
   highlightToolUseId,
@@ -80,8 +87,15 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   notificationColorMap,
   registerToolRef,
 }: Readonly<DisplayItemListProps>): React.JSX.Element {
-  /** An item is expanded unless it's explicitly in the collapsed set. */
-  const isItemExpanded = (itemKey: string): boolean => !collapsedItemIds.has(itemKey);
+  /**
+   * Tri-state expansion: an explicit expand/collapse wins; otherwise fall back to the
+   * item's per-type default (collapsed for Task/WebFetch/Read/Bash/ToolSearch).
+   */
+  const isItemExpanded = (itemKey: string, defaultCollapsed: boolean): boolean => {
+    if (expandedItemIds.has(itemKey)) return true;
+    if (collapsedItemIds.has(itemKey)) return false;
+    return !defaultCollapsed;
+  };
   // Reply-link highlight: when hovering a reply badge, dim everything except the linked pair
   const [replyLinkToolId, setReplyLinkToolId] = useState<string | null>(null);
 
@@ -114,6 +128,9 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           return null;
         }
 
+        // Per-type default: collapsed for Task/WebFetch/Read/Bash/ToolSearch, else expanded.
+        const defaultCollapsed = isItemDefaultCollapsed(item);
+
         let itemKey = '';
         let element: React.ReactNode = null;
 
@@ -134,8 +151,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
               <ThinkingItem
                 step={thinkingStep}
                 preview={truncateText(item.content, 150)}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
               />
             );
             break;
@@ -157,8 +174,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
               <TextItem
                 step={textStep}
                 preview={truncateText(item.content, 150)}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
               />
             );
             break;
@@ -169,8 +186,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
             element = (
               <LinkedToolItem
                 linkedTool={item.tool}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
                 isHighlighted={highlightToolUseId === item.tool.id}
                 highlightColor={highlightColor}
                 notificationDotColor={notificationColorMap?.get(item.tool.id)}
@@ -201,8 +218,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
               <SubagentItem
                 step={subagentStep}
                 subagent={item.subagent}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
                 aiGroupId={aiGroupId}
                 highlightToolUseId={highlightToolUseId}
                 highlightColor={highlightColor}
@@ -218,8 +235,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
             element = (
               <SlashItem
                 slash={item.slash}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
               />
             );
             break;
@@ -230,8 +247,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
             element = (
               <TeammateMessageItem
                 teammateMessage={item.teammateMessage}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
                 onReplyHover={handleReplyHover}
               />
             );
@@ -248,8 +265,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 label="Input"
                 summary={truncateText(inputContent, 80)}
                 tokenCount={inputTokenCount}
-                onClick={() => onItemClick(itemKey)}
-                isExpanded={isItemExpanded(itemKey)}
+                onClick={() => onItemClick(itemKey, !defaultCollapsed)}
+                isExpanded={isItemExpanded(itemKey, defaultCollapsed)}
               >
                 <MarkdownViewer content={inputContent} copyable />
               </BaseItem>
@@ -260,11 +277,11 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           case 'compact_boundary': {
             itemKey = `compact-${index}`;
             const compactContent = item.content;
-            const compactExpanded = isItemExpanded(itemKey);
+            const compactExpanded = isItemExpanded(itemKey, defaultCollapsed);
             element = (
               <div>
                 <button
-                  onClick={() => onItemClick(itemKey)}
+                  onClick={() => onItemClick(itemKey, !defaultCollapsed)}
                   className="group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 transition-all duration-200"
                   style={{
                     backgroundColor: TOOL_CALL_BG,

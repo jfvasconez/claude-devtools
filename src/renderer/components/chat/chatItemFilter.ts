@@ -54,6 +54,19 @@ export const FILTER_DEFS: ReadonlyArray<{ type: FilterType; label: string }> = [
 export const ALL_FILTER_TYPES: readonly FilterType[] = FILTER_DEFS.map((d) => d.type);
 
 /**
+ * Item types that DEFAULT to collapsed (Task, WebFetch, Read, Bash, ToolSearch).
+ * Every other type defaults to expanded. A user's explicit expand/collapse always
+ * overrides this default (tracked per-tab in the tabUISlice).
+ */
+export const DEFAULT_COLLAPSED_TYPES: ReadonlySet<FilterType> = new Set<FilterType>([
+  'task',
+  'webfetch',
+  'read',
+  'bash',
+  'toolsearch',
+]);
+
+/**
  * Maps a tool `name` to its filter category.
  */
 export function toolNameToFilterType(name: string): FilterType {
@@ -110,6 +123,14 @@ export function displayItemFilterType(item: AIGroupDisplayItem): FilterType {
       // slash, teammate_message, compact_boundary → catch-all
       return 'other';
   }
+}
+
+/**
+ * True if a display item's type defaults to COLLAPSED (see DEFAULT_COLLAPSED_TYPES).
+ * Reuses the existing type mapping so classification stays in lock-step with the data model.
+ */
+export function isItemDefaultCollapsed(item: AIGroupDisplayItem): boolean {
+  return DEFAULT_COLLAPSED_TYPES.has(displayItemFilterType(item));
 }
 
 /**

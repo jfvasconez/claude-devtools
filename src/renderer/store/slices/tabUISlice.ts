@@ -33,10 +33,18 @@ export interface TabUIState {
   collapsedAIGroupIds: Set<string>;
 
   /**
-   * Which display items within AI groups are COLLAPSED: Map<aiGroupId, Set<itemId>>.
-   * Default presentation is expanded; this tracks manual collapses.
+   * Which display items within AI groups are explicitly COLLAPSED: Map<aiGroupId, Set<itemId>>.
+   * This overrides an expanded-by-default item.
    */
   collapsedDisplayItemIds: Map<string, Set<string>>;
+
+  /**
+   * Which display items within AI groups are explicitly EXPANDED: Map<aiGroupId, Set<itemId>>.
+   * This overrides a collapsed-by-default item (Task/WebFetch/Read/Bash/ToolSearch — see
+   * DEFAULT_COLLAPSED_TYPES). Together the two sets form a per-item tri-state:
+   * explicit-expanded > explicit-collapsed > per-type default.
+   */
+  expandedDisplayItemIds: Map<string, Set<string>>;
 
   /** Which subagent traces are manually expanded (by subagentId) */
   expandedSubagentTraceIds: Set<string>;
@@ -65,6 +73,7 @@ function createDefaultTabUIState(): TabUIState {
   return {
     collapsedAIGroupIds: new Set(),
     collapsedDisplayItemIds: new Map(),
+    expandedDisplayItemIds: new Map(),
     expandedSubagentTraceIds: new Set(),
     hiddenFilterTypes: new Set(),
     showContextPanel: false,
@@ -96,10 +105,21 @@ export interface TabUISlice {
   expandAIGroupForTab: (tabId: string, aiGroupId: string) => void;
 
   // Display item expansion (per-tab)
-  /** Toggle display item expansion within an AI group for a specific tab */
-  toggleDisplayItemExpansionForTab: (tabId: string, aiGroupId: string, itemId: string) => void;
-  /** Get COLLAPSED display item IDs for an AI group in a specific tab (default: all expanded) */
+  /**
+   * Toggle display item expansion within an AI group for a specific tab.
+   * `defaultExpanded` is the item's per-type default (false for the collapsed-by-default
+   * types) and is used to resolve the current effective state before flipping it.
+   */
+  toggleDisplayItemExpansionForTab: (
+    tabId: string,
+    aiGroupId: string,
+    itemId: string,
+    defaultExpanded: boolean
+  ) => void;
+  /** Get explicitly-COLLAPSED display item IDs for an AI group in a specific tab */
   getCollapsedDisplayItemIdsForTab: (tabId: string, aiGroupId: string) => Set<string>;
+  /** Get explicitly-EXPANDED display item IDs for an AI group in a specific tab */
+  getExpandedDisplayItemIdsForTab: (tabId: string, aiGroupId: string) => Set<string>;
   /** Ensure a display item is expanded for a specific tab (for auto-expand scenarios) */
   expandDisplayItemForTab: (tabId: string, aiGroupId: string, itemId: string) => void;
 
@@ -210,24 +230,48 @@ export const createTabUISlice: StateCreator<AppState, [], [], TabUISlice> = (set
   // Display Item Expansion
   // ==========================================================================
 
-  toggleDisplayItemExpansionForTab: (tabId: string, aiGroupId: string, itemId: string) => {
+  toggleDisplayItemExpansionForTab: (
+    tabId: string,
+    aiGroupId: string,
+    itemId: string,
+    defaultExpanded: boolean
+  ) => {
     const state = get();
     const newMap = new Map(state.tabUIStates);
     const tabState = newMap.get(tabId) ?? createDefaultTabUIState();
 
-    // Default expanded → presence means "collapsed". Toggle flips membership.
-    const newDisplayItemMap = new Map(tabState.collapsedDisplayItemIds);
-    const currentSet = newDisplayItemMap.get(aiGroupId) ?? new Set<string>();
-    const newSet = new Set(currentSet);
+    const collapsedSet = tabState.collapsedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
+    const expandedSet = tabState.expandedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
 
-    if (newSet.has(itemId)) {
-      newSet.delete(itemId);
+    // Resolve the current effective state (tri-state), then flip it and record the
+    // new state explicitly so it overrides the per-type default.
+    const currentlyExpanded = expandedSet.has(itemId)
+      ? true
+      : collapsedSet.has(itemId)
+        ? false
+        : defaultExpanded;
+    const nextExpanded = !currentlyExpanded;
+
+    const newCollapsedSet = new Set(collapsedSet);
+    const newExpandedSet = new Set(expandedSet);
+    if (nextExpanded) {
+      newExpandedSet.add(itemId);
+      newCollapsedSet.delete(itemId);
     } else {
-      newSet.add(itemId);
+      newCollapsedSet.add(itemId);
+      newExpandedSet.delete(itemId);
     }
 
-    newDisplayItemMap.set(aiGroupId, newSet);
-    newMap.set(tabId, { ...tabState, collapsedDisplayItemIds: newDisplayItemMap });
+    const newCollapsedMap = new Map(tabState.collapsedDisplayItemIds);
+    newCollapsedMap.set(aiGroupId, newCollapsedSet);
+    const newExpandedMap = new Map(tabState.expandedDisplayItemIds);
+    newExpandedMap.set(aiGroupId, newExpandedSet);
+
+    newMap.set(tabId, {
+      ...tabState,
+      collapsedDisplayItemIds: newCollapsedMap,
+      expandedDisplayItemIds: newExpandedMap,
+    });
     set({ tabUIStates: newMap });
   },
 
@@ -236,21 +280,41 @@ export const createTabUISlice: StateCreator<AppState, [], [], TabUISlice> = (set
     return tabState?.collapsedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
   },
 
+  getExpandedDisplayItemIdsForTab: (tabId: string, aiGroupId: string) => {
+    const tabState = get().tabUIStates.get(tabId);
+    return tabState?.expandedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
+  },
+
   expandDisplayItemForTab: (tabId: string, aiGroupId: string, itemId: string) => {
     const state = get();
     const tabState = state.tabUIStates.get(tabId);
     if (!tabState) return;
-    const currentSet = tabState.collapsedDisplayItemIds.get(aiGroupId);
-    // Ensure expanded = remove from the collapsed set (no-op if not collapsed).
-    if (!currentSet?.has(itemId)) return;
+    const collapsedSet = tabState.collapsedDisplayItemIds.get(aiGroupId);
+    const expandedSet = tabState.expandedDisplayItemIds.get(aiGroupId);
+    // Already explicitly expanded and not explicitly collapsed → nothing to do.
+    if (expandedSet?.has(itemId) && !collapsedSet?.has(itemId)) return;
 
     const newMap = new Map(state.tabUIStates);
-    const newDisplayItemMap = new Map(tabState.collapsedDisplayItemIds);
-    const newSet = new Set(currentSet);
-    newSet.delete(itemId);
-    newDisplayItemMap.set(aiGroupId, newSet);
 
-    newMap.set(tabId, { ...tabState, collapsedDisplayItemIds: newDisplayItemMap });
+    // Force expanded: add to the expanded set AND clear any explicit collapse. This
+    // guarantees expansion regardless of the item's per-type default.
+    const newExpandedSet = new Set(expandedSet ?? new Set<string>());
+    newExpandedSet.add(itemId);
+    const newExpandedMap = new Map(tabState.expandedDisplayItemIds);
+    newExpandedMap.set(aiGroupId, newExpandedSet);
+
+    const newCollapsedMap = new Map(tabState.collapsedDisplayItemIds);
+    if (collapsedSet?.has(itemId)) {
+      const newCollapsedSet = new Set(collapsedSet);
+      newCollapsedSet.delete(itemId);
+      newCollapsedMap.set(aiGroupId, newCollapsedSet);
+    }
+
+    newMap.set(tabId, {
+      ...tabState,
+      collapsedDisplayItemIds: newCollapsedMap,
+      expandedDisplayItemIds: newExpandedMap,
+    });
     set({ tabUIStates: newMap });
   },
 

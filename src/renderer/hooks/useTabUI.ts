@@ -35,9 +35,11 @@ interface UseTabUIReturn {
   isAIGroupExpanded: (aiGroupId: string) => boolean;
   toggleAIGroupExpansion: (aiGroupId: string) => void;
   expandAIGroup: (aiGroupId: string) => void;
-  /** COLLAPSED display item IDs for a group (default presentation is expanded). */
+  /** Explicitly-COLLAPSED display item IDs for a group. */
   getCollapsedDisplayItemIds: (aiGroupId: string) => Set<string>;
-  toggleDisplayItemExpansion: (aiGroupId: string, itemId: string) => void;
+  /** Explicitly-EXPANDED display item IDs for a group (override the per-type default). */
+  getExpandedDisplayItemIds: (aiGroupId: string) => Set<string>;
+  toggleDisplayItemExpansion: (aiGroupId: string, itemId: string, defaultExpanded: boolean) => void;
   expandDisplayItem: (aiGroupId: string, itemId: string) => void;
   isSubagentTraceExpanded: (subagentId: string) => boolean;
   toggleSubagentTraceExpansion: (subagentId: string) => void;
@@ -138,7 +140,7 @@ export function useTabUI(): UseTabUIReturn {
     [tabId, expandAIGroupForTab]
   );
 
-  // Display item COLLAPSED ids - derive from tabState (default presentation is expanded)
+  // Display item explicit COLLAPSED ids - derive from tabState
   const getCollapsedDisplayItemIds = useCallback(
     (aiGroupId: string): Set<string> => {
       return tabState?.collapsedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
@@ -146,10 +148,18 @@ export function useTabUI(): UseTabUIReturn {
     [tabState]
   );
 
+  // Display item explicit EXPANDED ids - derive from tabState
+  const getExpandedDisplayItemIds = useCallback(
+    (aiGroupId: string): Set<string> => {
+      return tabState?.expandedDisplayItemIds.get(aiGroupId) ?? new Set<string>();
+    },
+    [tabState]
+  );
+
   const toggleDisplayItemExpansion = useCallback(
-    (aiGroupId: string, itemId: string): void => {
+    (aiGroupId: string, itemId: string, defaultExpanded: boolean): void => {
       if (!tabId) return;
-      toggleDisplayItemExpansionForTab(tabId, aiGroupId, itemId);
+      toggleDisplayItemExpansionForTab(tabId, aiGroupId, itemId, defaultExpanded);
     },
     [tabId, toggleDisplayItemExpansionForTab]
   );
@@ -256,8 +266,9 @@ export function useTabUI(): UseTabUIReturn {
     toggleAIGroupExpansion,
     expandAIGroup,
 
-    // Display item expansion (collapsed-tracking; default expanded)
+    // Display item expansion (tri-state: explicit expand/collapse over per-type default)
     getCollapsedDisplayItemIds,
+    getExpandedDisplayItemIds,
     toggleDisplayItemExpansion,
     expandDisplayItem,
 

@@ -133,6 +133,7 @@ const AIChatGroupInner = ({
     isAIGroupExpanded: isAIGroupExpandedForTab,
     toggleAIGroupExpansion,
     getCollapsedDisplayItemIds,
+    getExpandedDisplayItemIds,
     toggleDisplayItemExpansion,
     expandDisplayItem,
     hiddenFilterTypes,
@@ -304,6 +305,12 @@ const AIChatGroupInner = ({
     [getCollapsedDisplayItemIds, aiGroup.id]
   );
 
+  // Explicitly-expanded item IDs (override collapsed-by-default types), per-tab.
+  const expandedItemIds = useMemo(
+    () => getExpandedDisplayItemIds(aiGroup.id),
+    [getExpandedDisplayItemIds, aiGroup.id]
+  );
+
   // Whether the always-visible last output should be hidden by the per-type filter.
   // Interruptions / ongoing state (null type) are never hidden.
   const lastOutputHidden = useMemo(() => {
@@ -409,9 +416,11 @@ const AIChatGroupInner = ({
   // Determine if there's content to toggle
   const hasToggleContent = enhanced.displayItems.length > 0;
 
-  // Handle item click - toggle inline expansion using store action
-  const handleItemClick = (itemId: string): void => {
-    toggleDisplayItemExpansion(aiGroup.id, itemId);
+  // Handle item click - toggle inline expansion using store action.
+  // `defaultExpanded` is the item's per-type default, forwarded so the store can resolve
+  // the current effective state before flipping it.
+  const handleItemClick = (itemId: string, defaultExpanded: boolean): void => {
+    toggleDisplayItemExpansion(aiGroup.id, itemId, defaultExpanded);
   };
 
   return (
@@ -531,6 +540,7 @@ const AIChatGroupInner = ({
             items={enhanced.displayItems}
             onItemClick={handleItemClick}
             collapsedItemIds={collapsedItemIds}
+            expandedItemIds={expandedItemIds}
             hiddenFilterTypes={hiddenFilterTypes}
             aiGroupId={aiGroup.id}
             highlightToolUseId={highlightToolUseId}
