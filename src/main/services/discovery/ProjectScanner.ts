@@ -25,6 +25,7 @@ import {
   type Session,
   type SessionCursor,
   type SessionMetadataLevel,
+  type SessionStatus,
   type SessionsByIdsOptions,
   type SessionsPaginationOptions,
 } from '@main/types';
@@ -58,6 +59,22 @@ const logger = createLogger('Discovery:ProjectScanner');
 
 /** How long to reuse the cached project list for search (ms) */
 const SEARCH_PROJECT_CACHE_TTL_MS = 30_000;
+
+/**
+ * Derive the computed session status from the (already staleness-gated) isOngoing
+ * flag and the raw detection booleans from analyzeSessionFileMetadata.
+ * Precedence, first match wins: ongoing > error > waiting > interrupted > complete.
+ */
+function computeSessionStatus(
+  isOngoing: boolean,
+  flags: { hasError: boolean; awaitingUserInput: boolean; endedInterrupted: boolean }
+): SessionStatus {
+  if (isOngoing) return 'ongoing';
+  if (flags.hasError) return 'error';
+  if (flags.awaitingUserInput) return 'waiting';
+  if (flags.endedInterrupted) return 'interrupted';
+  return 'complete';
+}
 
 export class ProjectScanner {
   private readonly projectsDir: string;
@@ -754,6 +771,10 @@ export class ProjectScanner {
     const isOngoing =
       metadata.isOngoing && Date.now() - effectiveMtime < STALE_SESSION_THRESHOLD_MS;
 
+    // Computed status precedence (first match wins): ongoing > error > waiting >
+    // interrupted > complete. 'ongoing' uses the staleness-gated value above.
+    const status = computeSessionStatus(isOngoing, metadata);
+
     return {
       id: sessionId,
       projectId,
@@ -766,6 +787,7 @@ export class ProjectScanner {
       hasSubagents,
       messageCount: metadata.messageCount,
       isOngoing,
+      status,
       gitBranch: metadata.gitBranch ?? undefined,
       metadataLevel,
       contextConsumption: metadata.contextConsumption,
@@ -815,6 +837,9 @@ export class ProjectScanner {
           isOngoing: false,
           gitBranch: null,
           hasDisplayableContent: false,
+          hasError: false,
+          awaitingUserInput: false,
+          endedInterrupted: false,
         };
       }
     }
@@ -825,6 +850,10 @@ export class ProjectScanner {
       previewTimestampMs !== null && Number.isFinite(previewTimestampMs)
         ? previewTimestampMs
         : birthtimeMs;
+
+    // Light/SSH path: no staleness gate is applied here, so 'ongoing' reflects the
+    // raw parse result. Best-effort — 'waiting' still works when the parse succeeded.
+    const status = computeSessionStatus(metadata.isOngoing, metadata);
 
     return {
       id: sessionId,
@@ -837,6 +866,7 @@ export class ProjectScanner {
       hasSubagents: false,
       messageCount: metadata.messageCount,
       metadataLevel,
+      status,
     };
   }
 

@@ -351,6 +351,15 @@ export interface SessionFileMetadata {
   /** Per-phase token breakdown */
   phaseBreakdown?: PhaseTokenBreakdown[];
   hasDisplayableContent: boolean;
+  /** True if any tool_result in the session had is_error === true */
+  hasError: boolean;
+  /**
+   * True if the last AskUserQuestion tool_use has no matching tool_result yet
+   * (the session is awaiting the user's answer).
+   */
+  awaitingUserInput: boolean;
+  /** True if the last "ending" event was a user interruption ("[Request interrupted by user"). */
+  endedInterrupted: boolean;
 }
 
 /**
@@ -368,6 +377,9 @@ export async function analyzeSessionFileMetadata(
       isOngoing: false,
       gitBranch: null,
       hasDisplayableContent: false,
+      hasError: false,
+      awaitingUserInput: false,
+      endedInterrupted: false,
     };
   }
 
@@ -391,6 +403,14 @@ export async function analyzeSessionFileMetadata(
   let hasActivityAfterLastEnding = false;
   // Track tool_use IDs that are shutdown responses so their tool_results are also ending events
   const shutdownToolIds = new Set<string>();
+
+  // Status detection (threaded out as raw booleans; final precedence applied in ProjectScanner)
+  let hasError = false;
+  // Track the last AskUserQuestion tool_use and whether it has been answered yet.
+  let lastAskUserQuestionId: string | null = null;
+  let lastAskUserQuestionAnswered = false;
+  // Whether the most recent "ending" event was a user interruption.
+  let lastEndingWasInterrupt = false;
 
   // Context consumption tracking
 
@@ -503,6 +523,7 @@ export async function analyzeSessionFileMetadata(
           if (block.name === 'ExitPlanMode') {
             lastEndingIndex = activityIndex++;
             hasActivityAfterLastEnding = false;
+            lastEndingWasInterrupt = false;
           } else if (
             block.name === 'SendMessage' &&
             block.input?.type === 'shutdown_response' &&
@@ -512,7 +533,13 @@ export async function analyzeSessionFileMetadata(
             shutdownToolIds.add(block.id);
             lastEndingIndex = activityIndex++;
             hasActivityAfterLastEnding = false;
+            lastEndingWasInterrupt = false;
           } else {
+            if (block.name === 'AskUserQuestion') {
+              // Awaiting a user answer until a matching tool_result arrives.
+              lastAskUserQuestionId = block.id;
+              lastAskUserQuestionAnswered = false;
+            }
             hasAnyOngoingActivity = true;
             if (lastEndingIndex >= 0) {
               hasActivityAfterLastEnding = true;
@@ -522,6 +549,7 @@ export async function analyzeSessionFileMetadata(
         } else if (block.type === 'text' && block.text && String(block.text).trim().length > 0) {
           lastEndingIndex = activityIndex++;
           hasActivityAfterLastEnding = false;
+          lastEndingWasInterrupt = false;
         }
       }
     } else if (parsed.type === 'user' && Array.isArray(parsed.content)) {
@@ -532,10 +560,18 @@ export async function analyzeSessionFileMetadata(
 
       for (const block of parsed.content) {
         if (block.type === 'tool_result' && block.tool_use_id) {
+          if (block.is_error === true) {
+            hasError = true;
+          }
+          // A matching tool_result for the pending AskUserQuestion = user answered.
+          if (block.tool_use_id === lastAskUserQuestionId) {
+            lastAskUserQuestionAnswered = true;
+          }
           if (shutdownToolIds.has(block.tool_use_id) || isRejection) {
             // Shutdown tool result or user rejection = ending event
             lastEndingIndex = activityIndex++;
             hasActivityAfterLastEnding = false;
+            lastEndingWasInterrupt = false;
           } else {
             hasAnyOngoingActivity = true;
             if (lastEndingIndex >= 0) {
@@ -550,6 +586,7 @@ export async function analyzeSessionFileMetadata(
         ) {
           lastEndingIndex = activityIndex++;
           hasActivityAfterLastEnding = false;
+          lastEndingWasInterrupt = true;
         }
       }
     }
@@ -644,5 +681,8 @@ export async function analyzeSessionFileMetadata(
     compactionCount: compactionPhases.length > 0 ? compactionPhases.length : undefined,
     phaseBreakdown,
     hasDisplayableContent,
+    hasError,
+    awaitingUserInput: lastAskUserQuestionId !== null && !lastAskUserQuestionAnswered,
+    endedInterrupted: lastEndingWasInterrupt,
   };
 }

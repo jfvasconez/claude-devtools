@@ -78,6 +78,12 @@ export interface PhaseTokenBreakdown {
   postCompaction?: number;
 }
 
+/**
+ * Computed lifecycle status for a session, used for at-a-glance status indicators.
+ * Precedence (first match wins): ongoing > error > waiting > interrupted > complete.
+ */
+export type SessionStatus = 'ongoing' | 'error' | 'waiting' | 'interrupted' | 'complete';
+
 export interface Session {
   /** Session UUID (JSONL filename without extension) */
   id: string;
@@ -101,6 +107,8 @@ export interface Session {
   messageCount: number;
   /** Whether the session is ongoing (last AI response has no output yet) */
   isOngoing?: boolean;
+  /** Computed lifecycle status (ongoing/error/waiting/interrupted/complete) */
+  status?: SessionStatus;
   /** Git branch name if available */
   gitBranch?: string;
   /** Metadata completeness level */
