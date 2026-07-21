@@ -86,8 +86,8 @@
   --prose-body: #f4f4f5;
   --prose-muted: #a1a1aa;
   --prose-link: #60a5fa;
-  --prose-code-bg: rgba(255, 255, 255, 0.08);
-  --prose-code-text: #e4e4e7;
+  --prose-code-bg: rgba(59, 142, 234, 0.15);
+  --prose-code-text: #3b8eea;
   --prose-pre-bg: #1c1c1e;
   --prose-pre-border: rgba(255, 255, 255, 0.1);
   --prose-blockquote-border: rgba(255, 255, 255, 0.1);
@@ -276,8 +276,8 @@
   --prose-body: #2a2925;
   --prose-muted: #6d6b65;
   --prose-link: #2563eb;
-  --prose-code-bg: rgba(0, 0, 0, 0.05);
-  --prose-code-text: #3a3935;
+  --prose-code-bg: rgba(59, 142, 234, 0.1);
+  --prose-code-text: #1f5fbf;
   --prose-pre-bg: #f0efed;
   --prose-pre-border: #d5d3cf;
   --prose-blockquote-border: #d5d3cf;

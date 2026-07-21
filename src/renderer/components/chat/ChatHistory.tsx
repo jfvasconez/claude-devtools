@@ -6,7 +6,7 @@ import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ChevronsDown } from 'lucide-react';
+import { ChevronsDown, Loader2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { ChatFilterBar } from './ChatFilterBar';
@@ -391,6 +391,9 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
   // Scroll-to-bottom button visibility
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // True while the one-click "scroll to true bottom" routine is converging.
+  const [isScrollingToBottom, setIsScrollingToBottom] = useState(false);
+  const isScrollingToBottomRef = useRef(false);
 
   const checkScrollButton = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -410,6 +413,67 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     externalRef: scrollContainerRef,
     resetKey: effectiveTabId,
   });
+
+  // One-click "scroll to the TRUE bottom".
+  //
+  // The conversation is fully loaded (no chat-item pagination); the reason a single
+  // scrollToBottom lands mid-way is virtualization: rowVirtualizer.getTotalSize() uses
+  // the per-item height ESTIMATE for rows that haven't rendered yet, so scrollHeight
+  // grows as we descend and freshly measured rows report their real heights. We converge
+  // by repeatedly jumping to the last index (or container bottom), waiting a double-rAF
+  // for the virtualizer to render + measure the newly revealed rows, and repeating until
+  // scrollTop/scrollHeight stabilize AND we are pinned to the bottom.
+  const handleScrollToTrueBottom = useCallback(async (): Promise<void> => {
+    const container = scrollContainerRef.current;
+    if (!container || isScrollingToBottomRef.current) return;
+
+    isScrollingToBottomRef.current = true;
+    setIsScrollingToBottom(true);
+    try {
+      const MAX_ITERATIONS = 30;
+      const lastIndex = filteredItems.length - 1;
+      let prevScrollTop = -1;
+      let prevScrollHeight = -1;
+
+      for (let i = 0; i < MAX_ITERATIONS; i++) {
+        // Ask the virtualizer to bring the final row fully into view when virtualizing;
+        // otherwise a plain jump to the measured bottom is enough. Both trigger the
+        // container's scroll handler, which renders the bottom rows for measurement.
+        if (shouldVirtualize && lastIndex >= 0) {
+          rowVirtualizer.scrollToIndex(lastIndex, { align: 'end' });
+        } else {
+          container.scrollTop = container.scrollHeight - container.clientHeight;
+        }
+
+        // Let the virtualizer render + measure the newly revealed rows.
+        await waitForDoubleRaf();
+
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        const atBottom = scrollHeight - scrollTop - clientHeight <= 2;
+        // Converged: nothing shifted this pass and we're pinned to the bottom pixel.
+        if (atBottom && scrollHeight === prevScrollHeight && scrollTop === prevScrollTop) {
+          break;
+        }
+        prevScrollTop = scrollTop;
+        prevScrollHeight = scrollHeight;
+      }
+
+      // Final hard snap to the true bottom pixel and sync the auto-scroll hook's
+      // internal "at bottom" state so normal follow-on-update behavior resumes.
+      container.scrollTop = container.scrollHeight - container.clientHeight;
+      scrollToBottom('auto');
+    } finally {
+      isScrollingToBottomRef.current = false;
+      setIsScrollingToBottom(false);
+      checkScrollButton();
+    }
+  }, [
+    filteredItems.length,
+    shouldVirtualize,
+    rowVirtualizer,
+    scrollToBottom,
+    checkScrollButton,
+  ]);
 
   // Re-check button visibility whenever conversation updates
   useEffect(() => {
@@ -897,10 +961,10 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
         {showScrollButton && (
           <button
             onClick={() => {
-              scrollToBottom('smooth');
-              setShowScrollButton(false);
+              void handleScrollToTrueBottom();
             }}
-            className="absolute bottom-5 z-20 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs shadow-lg transition-[right] duration-200"
+            disabled={isScrollingToBottom}
+            className="absolute bottom-5 z-20 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs shadow-lg transition-[right] duration-200 disabled:cursor-default disabled:opacity-80"
             style={{
               right:
                 isContextPanelVisible && allContextInjections.length > 0
@@ -912,7 +976,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
             }}
             title="Scroll to bottom"
           >
-            <ChevronsDown className="size-3.5" />
+            {isScrollingToBottom ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <ChevronsDown className="size-3.5" />
+            )}
             <span>Bottom</span>
           </button>
         )}
