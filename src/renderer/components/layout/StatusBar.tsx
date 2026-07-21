@@ -31,7 +31,7 @@ import {
 import { getTerminalVisual, type TerminalStateInfo } from '@renderer/constants/sessionStatus';
 import { useUsage, type UsageWindow } from '@renderer/hooks/useUsage';
 import { useStore } from '@renderer/store';
-import { parseModelString } from '@shared/utils/modelParser';
+import { friendlyModelLabel, parseModelString } from '@shared/utils/modelParser';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { ModelInfo } from '@shared/utils/modelParser';
@@ -89,22 +89,6 @@ function useSessionModel(
     }
     return { info: null, raw: null };
   }, [messages]);
-}
-
-/**
- * Map a raw model id + parsed info to a user-friendly label, e.g.
- * "claude-opus-4-8[1m]" → "Opus 4.8 (1M context)".
- */
-function friendlyModelLabel(raw: string, info: ModelInfo | null): string {
-  const family = info?.family ?? '';
-  const titled = family ? family.charAt(0).toUpperCase() + family.slice(1) : raw;
-  const version = info
-    ? info.minorVersion != null
-      ? `${info.majorVersion}.${info.minorVersion}`
-      : `${info.majorVersion}`
-    : '';
-  const base = version ? `${titled} ${version}` : titled;
-  return /1m/i.test(raw) ? `${base} (1M context)` : base;
 }
 
 /** Weekly reset → "Jul 23" (local). */
