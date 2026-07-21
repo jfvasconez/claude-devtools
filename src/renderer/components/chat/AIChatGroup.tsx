@@ -136,8 +136,10 @@ const AIChatGroupInner = ({
     getExpandedDisplayItemIds,
     toggleDisplayItemExpansion,
     expandDisplayItem,
-    hiddenFilterTypes,
   } = useTabUI();
+
+  // Per-type filter selection is GLOBAL + persisted (see filterSlice), not per-tab.
+  const hiddenFilterTypes = useStore((s) => s.globalHiddenFilterTypes);
 
   // Per-tab session data, falling back to global state
   const projectRoot = useStore((s) => {

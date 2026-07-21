@@ -49,13 +49,6 @@ export interface TabUIState {
   /** Which subagent traces are manually expanded (by subagentId) */
   expandedSubagentTraceIds: Set<string>;
 
-  /**
-   * Which per-type filter chips are HIDDEN (by FilterType string).
-   * Empty = all item types shown. Stored as strings to avoid coupling the store
-   * to the renderer-local FilterType union.
-   */
-  hiddenFilterTypes: Set<string>;
-
   /** Whether the context panel is visible */
   showContextPanel: boolean;
 
@@ -75,7 +68,6 @@ function createDefaultTabUIState(): TabUIState {
     collapsedDisplayItemIds: new Map(),
     expandedDisplayItemIds: new Map(),
     expandedSubagentTraceIds: new Set(),
-    hiddenFilterTypes: new Set(),
     showContextPanel: false,
     selectedContextPhase: null,
     savedScrollTop: undefined,
@@ -122,14 +114,6 @@ export interface TabUISlice {
   getExpandedDisplayItemIdsForTab: (tabId: string, aiGroupId: string) => Set<string>;
   /** Ensure a display item is expanded for a specific tab (for auto-expand scenarios) */
   expandDisplayItemForTab: (tabId: string, aiGroupId: string, itemId: string) => void;
-
-  // Per-type filter (per-tab)
-  /** Toggle a filter type's visibility for a specific tab */
-  toggleFilterTypeForTab: (tabId: string, filterType: string) => void;
-  /** Replace the hidden filter-type set for a specific tab */
-  setHiddenFilterTypesForTab: (tabId: string, hidden: Set<string>) => void;
-  /** Get the hidden filter-type set for a specific tab */
-  getHiddenFilterTypesForTab: (tabId: string) => Set<string>;
 
   // Subagent trace expansion (per-tab)
   /** Toggle subagent trace expansion for a specific tab */
@@ -316,39 +300,6 @@ export const createTabUISlice: StateCreator<AppState, [], [], TabUISlice> = (set
       expandedDisplayItemIds: newExpandedMap,
     });
     set({ tabUIStates: newMap });
-  },
-
-  // ==========================================================================
-  // Per-type Filter
-  // ==========================================================================
-
-  toggleFilterTypeForTab: (tabId: string, filterType: string) => {
-    const state = get();
-    const newMap = new Map(state.tabUIStates);
-    const tabState = newMap.get(tabId) ?? createDefaultTabUIState();
-
-    const newHidden = new Set(tabState.hiddenFilterTypes);
-    if (newHidden.has(filterType)) {
-      newHidden.delete(filterType);
-    } else {
-      newHidden.add(filterType);
-    }
-
-    newMap.set(tabId, { ...tabState, hiddenFilterTypes: newHidden });
-    set({ tabUIStates: newMap });
-  },
-
-  setHiddenFilterTypesForTab: (tabId: string, hidden: Set<string>) => {
-    const state = get();
-    const newMap = new Map(state.tabUIStates);
-    const tabState = newMap.get(tabId) ?? createDefaultTabUIState();
-    newMap.set(tabId, { ...tabState, hiddenFilterTypes: new Set(hidden) });
-    set({ tabUIStates: newMap });
-  },
-
-  getHiddenFilterTypesForTab: (tabId: string) => {
-    const tabState = get().tabUIStates.get(tabId);
-    return tabState?.hiddenFilterTypes ?? new Set<string>();
   },
 
   // ==========================================================================
