@@ -379,6 +379,23 @@ const AIChatGroupInner = ({
     expandDisplayItem,
   ]);
 
+  // Determine the in-progress turn's current activity for the ongoing banner:
+  // the last thinking-or-tool display item decides "Thinking…" vs "Running <Tool>…".
+  // Output items (final text) and other kinds are ignored so the banner reflects
+  // what the model is actively doing; indeterminate → banner falls back to "Working…".
+  const { ongoingActivityKind, ongoingToolName } = useMemo(() => {
+    for (let i = enhanced.displayItems.length - 1; i >= 0; i--) {
+      const item = enhanced.displayItems[i];
+      if (item.type === 'thinking') {
+        return { ongoingActivityKind: 'thinking' as const, ongoingToolName: undefined };
+      }
+      if (item.type === 'tool') {
+        return { ongoingActivityKind: 'tool' as const, ongoingToolName: item.tool.name };
+      }
+    }
+    return { ongoingActivityKind: undefined, ongoingToolName: undefined };
+  }, [enhanced.displayItems]);
+
   // Determine if there's content to toggle
   const hasToggleContent = enhanced.displayItems.length > 0;
 
@@ -520,6 +537,9 @@ const AIChatGroupInner = ({
           aiGroupId={aiGroup.id}
           isLastGroup={aiGroup.isOngoing ?? false}
           isSessionOngoing={isSessionOngoing}
+          ongoingActivityKind={ongoingActivityKind}
+          ongoingToolName={ongoingToolName}
+          ongoingOutputTokens={aiGroup.tokens.output}
         />
       </div>
     </div>

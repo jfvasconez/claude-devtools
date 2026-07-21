@@ -13,7 +13,7 @@ import { formatDistanceToNowStrict } from 'date-fns';
 import { EyeOff, MessageSquare, Pin } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
-import { OngoingIndicator } from '../common/OngoingIndicator';
+import { LiveStatusDot } from '../common/OngoingIndicator';
 
 import { SessionContextMenu } from './SessionContextMenu';
 
@@ -264,7 +264,7 @@ export const SessionItem = React.memo(function SessionItem({
               className="size-3.5 shrink-0 accent-blue-500"
             />
           )}
-          {session.isOngoing && <OngoingIndicator />}
+          <LiveStatusDot status={session.status} isOngoing={session.isOngoing} />
           {isPinned && <Pin className="size-2.5 shrink-0 text-blue-400" />}
           {isHidden && <EyeOff className="size-2.5 shrink-0 text-zinc-500" />}
           <span

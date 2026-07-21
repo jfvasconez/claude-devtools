@@ -11,6 +11,8 @@ import { useStore } from '@renderer/store';
 import { Bell, BookOpen, FileText, LayoutDashboard, Pin, Search, Settings, X } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
+import { LiveStatusDot } from '../common/OngoingIndicator';
+
 import type { Tab } from '@renderer/types/tabs';
 
 interface SortableTabProps {
@@ -86,6 +88,17 @@ export const SortableTab = ({
     )
   );
 
+  // Live status for the tab's session, sourced from the same `sessions` array
+  // the sidebar dot uses. Tabs without an associated live session render no dot.
+  const liveStatus = useStore(
+    useShallow((s) => {
+      if (tab.type !== 'session' || !tab.sessionId) return null;
+      const session = s.sessions.find((sess) => sess.id === tab.sessionId);
+      if (!session) return null;
+      return { status: session.status, isOngoing: session.isOngoing };
+    })
+  );
+
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,
     data: {
@@ -145,6 +158,9 @@ export const SortableTab = ({
       }}
     >
       <Icon className="size-4 shrink-0" />
+      {liveStatus && (
+        <LiveStatusDot status={liveStatus.status} isOngoing={liveStatus.isOngoing} />
+      )}
       {tab.fromSearch && (
         <span title="Opened from search">
           <Search className="size-3 shrink-0 text-amber-400" />
