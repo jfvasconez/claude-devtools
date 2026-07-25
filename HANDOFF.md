@@ -1,7 +1,7 @@
 # HANDOFF — claude-devtools UI work
 
 **For:** the Claude Code session making edits to this repo.
-**Repo:** `/home/user/tools/claude-devtools` (Electron + electron-vite + Fastify backend + React/TS renderer; also builds a standalone HTTP server for Docker).
+**Repo:** this checkout (Electron + electron-vite + Fastify backend + React/TS renderer; also builds a standalone HTTP server for Docker).
 **Goal:** Improve this as a live viewer for Claude Code sessions in `~/.claude/`. Owner finds it heavier than a hand-rolled viewer; the job is to make it fast to iterate on and finish a short list of UI features.
 
 ## ⚠️ Read this first — most features already exist
