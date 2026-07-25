@@ -22,7 +22,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 const INLINE_SUPPRESSION = 'leak-check-ignore';
 
@@ -168,7 +168,11 @@ const RULES = [
       // prose placeholders like "your-api-key"; the separator is required so a
       // real secret starting with one of these letters is not skipped
       if (/^(?:your|my|the|some|a)[-_ ]/i.test(value)) return false;
-      if (/^(?:x{3,}|\.{3,}|placeholder|redacted|changeme|dummy|example|sample|test|fake|none|null|undefined|string|number|boolean)$/i.test(value))
+      if (
+        /^(?:x{3,}|\.{3,}|placeholder|redacted|changeme|dummy|example|sample|test|fake|none|null|undefined|string|number|boolean)$/i.test(
+          value
+        )
+      )
         return false;
       // needs a digit or mixed case to look like a real credential rather than prose
       return /\d/.test(value) || (/[a-z]/.test(value) && /[A-Z]/.test(value));
@@ -322,7 +326,8 @@ function main() {
   for (const file of changedPaths(mode, range)) {
     if (ignores.paths.some((rx) => rx.test(file))) continue;
     const hit = FORBIDDEN_PATHS.find((f) => f.pattern.test(file));
-    if (hit) findings.push({ file, line: 0, rule: 'forbidden-file', message: hit.message, match: file });
+    if (hit)
+      findings.push({ file, line: 0, rule: 'forbidden-file', message: hit.message, match: file });
   }
 
   // 2. Content rules
