@@ -367,9 +367,12 @@ export const DisplayItemList = React.memo(function DisplayItemList({
         return (
           <div
             key={itemKey}
-            // Reveal newly-streamed blocks. Only mounting elements animate — React
-            // reconciles existing items by key and re-renders don't restart a CSS
-            // animation — so this fires per arriving block, not on every update.
+            // Reveal newly-streamed blocks. Existing items keep stable keys, and a
+            // re-render doesn't restart a CSS animation on an already-mounted
+            // element, so in the steady state only the arriving block animates.
+            // Two known exceptions, both cosmetic: the group's items all animate
+            // once when it first mounts, and scrolling a live group out of and back
+            // into the virtualized window replays the reveal.
             className={animateNewItems ? 'animate-block-in' : undefined}
             style={
               replyLinkToolId !== null

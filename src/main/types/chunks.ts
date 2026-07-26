@@ -581,7 +581,15 @@ export interface FileChangeEvent {
  * which also fixes the chat pane, whose `getSessionDetail` refresh is
  * short-circuited by an unchanged JSONL fingerprint.
  *
- * `state` is undefined when the file was removed (session ended / cleaned up).
+ * `state` is undefined ONLY when the file was removed (session ended / cleaned
+ * up); the renderer treats that as "clear this session's live state". An
+ * unreadable or malformed file must NOT be reported this way — the emitter
+ * stays silent so the last known state stands. See FileWatcher.processStateChange.
+ *
+ * Producer contract: the hook writes non-atomically and `ts` is unix SECONDS,
+ * not milliseconds (`getTerminalVisual` multiplies by 1000). `state` carries the
+ * wezterm vocabulary — ready | working | attention | done | default — typed as
+ * `string` because it crosses a process boundary unvalidated by the compiler.
  */
 export interface TerminalStateChangeEvent {
   sessionId: string;

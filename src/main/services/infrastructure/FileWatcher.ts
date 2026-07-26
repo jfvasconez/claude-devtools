@@ -43,6 +43,12 @@ const WATCHER_RETRY_MS = 2000;
 const CATCH_UP_INTERVAL_MS = 30_000;
 /** Only catch-up scan files modified within this window */
 const CATCH_UP_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+/**
+ * Consecutive unreadable terminal-state reads before we report a real problem.
+ * The hook writes non-atomically, so one or two torn reads are normal; a run of
+ * them means permissions or a format change, not a race.
+ */
+const STATE_READ_FAILURE_ALERT_THRESHOLD = 3;
 
 interface AppendedParseResult {
   messages: ParsedMessage[];
@@ -60,6 +66,8 @@ export class FileWatcher extends EventEmitter {
   private projectsWatcher: fs.FSWatcher | null = null;
   private todosWatcher: fs.FSWatcher | null = null;
   private stateWatcher: fs.FSWatcher | null = null;
+  /** Consecutive failed terminal-state reads, keyed by file path. */
+  private readonly stateReadFailures = new Map<string, number>();
   private retryTimer: NodeJS.Timeout | null = null;
   private projectsPath: string;
   private todosPath: string;
@@ -71,6 +79,10 @@ export class FileWatcher extends EventEmitter {
   private projectScanner: ProjectScanner | null = null;
   private isWatching: boolean = false;
   private debounceTimers = new Map<string, NodeJS.Timeout>();
+  /** Pending throttled emits — kept separate from debounceTimers so the two
+   * scheduling policies can never collide on a shared key. */
+  private throttleTimers = new Map<string, NodeJS.Timeout>();
+  private throttlePending = new Map<string, () => void>();
   /** Track last processed line count per file for incremental error detection */
   private lastProcessedLineCount = new Map<string, number>();
   /** Track last processed file size in bytes for append-only parsing optimization */
@@ -190,11 +202,17 @@ export class FileWatcher extends EventEmitter {
       this.stateWatcher = null;
     }
 
-    // Clear any pending debounce timers
+    // Clear any pending debounce/throttle timers
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
+    for (const timer of this.throttleTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.throttleTimers.clear();
+    this.throttlePending.clear();
+    this.stateReadFailures.clear();
 
     // Clear catch-up timer
     if (this.catchUpTimer) {
@@ -856,7 +874,7 @@ export class FileWatcher extends EventEmitter {
    * also have `<sessionId>.statusline.json` (a statusline snapshot). Only the
    * former is a terminal-state signal.
    */
-  private handleStateChange(eventType: string, filename: string): void {
+  private handleStateChange(_eventType: string, filename: string): void {
     try {
       // Only handle per-session JSON state files.
       if (!filename.endsWith('.json')) {
@@ -866,12 +884,21 @@ export class FileWatcher extends EventEmitter {
       // Skip statusline snapshots: `<sessionId>.statusline.json` is a sibling of
       // the state file, and treating it as one yields a bogus sessionId of
       // "<sessionId>.statusline" that matches nothing in the renderer.
+      //
+      // No statusline event replaces this, and nothing observable is lost: these
+      // used to trigger a sidebar refetch that refreshed `Session.statusline` in
+      // the session LIST, but the only consumer (StatusBar) reads it from
+      // `sessionDetail` instead. That copy has always been gated by the JSONL
+      // fingerprint, so statusline-only writes never reached the UI either way.
+      // Pushing them properly would need its own channel — out of scope here.
       if (filename.endsWith('.statusline.json')) {
         return;
       }
 
       // Debounce rapid writes to the same state file.
-      this.debounce(`state/${filename}`, () => this.processStateChange(eventType, filename));
+      // eventType is not consulted: file existence is the authority on
+      // removal, and it's re-checked when the debounced call actually runs.
+      this.debounce(`state/${filename}`, () => void this.processStateChange(filename));
     } catch (error) {
       logger.error('Error handling devtools-state change:', error);
     }
@@ -887,28 +914,46 @@ export class FileWatcher extends EventEmitter {
    * project" and refetched the whole sidebar page — the source of the sidebar
    * thrash. Carrying the state inline lets the renderer patch it in place instead.
    */
-  private async processStateChange(eventType: string, filename: string): Promise<void> {
+  private async processStateChange(filename: string): Promise<void> {
     const sessionId = path.basename(filename, '.json');
     const fullPath = path.join(this.statePath, filename);
     const fileExists = await this.fsProvider.exists(fullPath);
-    const removed = eventType === 'rename' && !fileExists;
 
-    let state: TerminalStateChangeEvent['state'];
-    if (!removed) {
-      state = await this.readTerminalState(fullPath);
+    // Removal is the ONLY thing that legitimately clears a session's live state.
+    if (!fileExists) {
+      this.stateReadFailures.delete(fullPath);
+      this.emit('terminal-state-change', { sessionId } satisfies TerminalStateChangeEvent);
+      logger.info(`FileWatcher: terminal-state removed - ${filename}`);
+      return;
     }
 
-    const event: TerminalStateChangeEvent = { sessionId, state };
-    this.emit('terminal-state-change', event);
-    logger.info(
-      `FileWatcher: terminal-state ${removed ? 'removed' : (state?.state ?? 'unreadable')} - ${filename}`
-    );
+    const state = await this.readTerminalState(fullPath);
+    if (!state) {
+      // Do NOT emit. `state: undefined` on the wire means "removed", and the
+      // renderer clears the session's live state when it sees it — so emitting on
+      // an unreadable read would blank a working session's indicator mid-turn.
+      // The hook writes non-atomically, so a torn read is expected and the next
+      // write re-fires; a persistent failure is a real problem and is reported.
+      const failures = (this.stateReadFailures.get(fullPath) ?? 0) + 1;
+      this.stateReadFailures.set(fullPath, failures);
+      if (failures === STATE_READ_FAILURE_ALERT_THRESHOLD) {
+        logger.error(
+          `FileWatcher: terminal-state unreadable ${failures}× in a row for ${filename} — ` +
+            `live status is stuck. Check permissions/format of ${fullPath}.`
+        );
+      }
+      return;
+    }
+
+    this.stateReadFailures.delete(fullPath);
+    this.emit('terminal-state-change', { sessionId, state } satisfies TerminalStateChangeEvent);
+    logger.info(`FileWatcher: terminal-state ${state.state} - ${filename}`);
   }
 
   /**
-   * Read and validate a terminal-state file. Returns undefined on any read/parse
-   * failure — the hook writes non-atomically, so a read can land mid-write and
-   * must not be treated as a state change.
+   * Read and validate a terminal-state file, or undefined if it can't be read or
+   * doesn't match the expected shape. Callers must NOT translate undefined into a
+   * state change — see processStateChange.
    */
   private async readTerminalState(
     fullPath: string
@@ -922,10 +967,13 @@ export class FileWatcher extends EventEmitter {
         typeof (parsed as { state?: unknown }).state === 'string' &&
         typeof (parsed as { ts?: unknown }).ts === 'number'
       ) {
-        return parsed as TerminalStateChangeEvent['state'];
+        const { state, ts, cwd } = parsed as { state: string; ts: number; cwd?: unknown };
+        // Narrow cwd rather than casting it through — ProjectScanner validates the
+        // same field when it reads this file, and the two readers should agree.
+        return { state, ts, cwd: typeof cwd === 'string' ? cwd : undefined };
       }
     } catch {
-      // Mid-write read or malformed JSON — skip this event, the next write re-fires.
+      // Mid-write read or malformed JSON — the caller counts and reports these.
     }
     return undefined;
   }
@@ -1096,31 +1144,41 @@ export class FileWatcher extends EventEmitter {
   }
 
   // ===========================================================================
-  // Debouncing
+  // Debouncing / throttling
   // ===========================================================================
 
   /**
-   * Throttle a function call for a specific key: keep at most one pending call,
-   * firing DEBOUNCE_MS after the FIRST event in a burst.
+   * Throttle a function call for a specific key: fire at most once per
+   * DEBOUNCE_MS, scheduled from the FIRST event in a burst, running the LATEST
+   * callback supplied before it fires.
    *
    * Used for session JSONL writes. A trailing debounce resets its timer on every
    * event, so a file being appended faster than the window never fires until the
    * writes stop — which is exactly the "nothing updates until Claude is done"
-   * behaviour. Bounding the delay instead guarantees an emit every DEBOUNCE_MS
-   * while a session streams.
+   * behaviour. Bounding the delay caps the latency at roughly DEBOUNCE_MS after
+   * the first event of a burst.
+   *
+   * Keeping the latest callback matters: it carries the event type, and a
+   * `change` followed by a delete must emit as the delete, not the change.
+   * Timers live in their own map so a key can never mean "debounce" here and
+   * "throttle" there.
    */
   private throttle(key: string, fn: () => void): void {
-    // Already scheduled — the pending call will pick up the latest file state.
-    if (this.debounceTimers.has(key)) {
+    // Later events in a burst supersede earlier ones — last write wins.
+    this.throttlePending.set(key, fn);
+
+    if (this.throttleTimers.has(key)) {
       return;
     }
 
     const timer = setTimeout(() => {
-      this.debounceTimers.delete(key);
-      fn();
+      this.throttleTimers.delete(key);
+      const pending = this.throttlePending.get(key);
+      this.throttlePending.delete(key);
+      pending?.();
     }, DEBOUNCE_MS);
 
-    this.debounceTimers.set(key, timer);
+    this.throttleTimers.set(key, timer);
   }
 
   /**

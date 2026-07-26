@@ -19,6 +19,8 @@ export interface SessionCacheEntry {
   cursor: string | null;
   hasMore: boolean;
   totalCount: number;
+  /** Pages held by `sessions`, so a restored list keeps its pagination depth. */
+  pagesLoaded: number;
   timestamp: number;
 }
 
@@ -77,6 +79,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         sessionsCursor: cached.cursor,
         sessionsHasMore: cached.hasMore,
         sessionsTotalCount: cached.totalCount,
+        sessionsPagesLoaded: cached.pagesLoaded,
         sessionsLoading: false,
         sessionsError: null,
         selectedSessionId: null,

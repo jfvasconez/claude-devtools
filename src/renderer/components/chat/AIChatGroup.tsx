@@ -549,7 +549,13 @@ const AIChatGroupInner = ({
             highlightColor={highlightColor}
             notificationColorMap={notificationColorMap}
             registerToolRef={registerToolRef}
-            animateNewItems={isSessionOngoing && (aiGroup.isOngoing ?? false)}
+            // Deliberately NOT gated on isSessionOngoing. That flips with the
+            // terminal state (working → attention on a permission prompt →
+            // working), and toggling the class off and back on RESTARTS the CSS
+            // animation for every mounted item — re-animating the whole group on
+            // each flip, the opposite of what this prop is for. `aiGroup.isOngoing`
+            // only changes when the group stops being the last one.
+            animateNewItems={aiGroup.isOngoing ?? false}
           />
         </div>
       )}

@@ -33,6 +33,12 @@ export interface SessionSlice {
   sessionsHasMore: boolean;
   sessionsTotalCount: number;
   sessionsLoadingMore: boolean;
+  /**
+   * How many pages of the session list are currently held. Tracked explicitly
+   * because array length is not a proxy for it — a merged-in new session or an
+   * out-of-page pinned row grows the list without a page having been fetched.
+   */
+  sessionsPagesLoaded: number;
   // Pinned sessions
   pinnedSessionIds: string[];
   // Hidden sessions
@@ -59,6 +65,8 @@ export interface SessionSlice {
    * that session, so the chat pane's live indicator tracks the terminal.
    */
   applyTerminalStateChange: (event: TerminalStateChangeEvent) => void;
+  /** Drop a deleted session from the sidebar list and the project cache. */
+  removeSessionFromList: (sessionId: string) => void;
   /** Toggle pin/unpin for a session */
   togglePinSession: (sessionId: string) => Promise<void>;
   /** Load pinned sessions from config for current project */
@@ -100,6 +108,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
   sessionsHasMore: false,
   sessionsTotalCount: 0,
   sessionsLoadingMore: false,
+  sessionsPagesLoaded: 0,
   // Pinned sessions
   pinnedSessionIds: [],
   // Hidden sessions
@@ -140,6 +149,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
       sessionsCursor: null,
       sessionsHasMore: false,
       sessionsTotalCount: 0,
+      sessionsPagesLoaded: 0,
     });
     try {
       const result = await api.getSessionsPaginated(projectId, null, 20, {
@@ -153,6 +163,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         sessionsHasMore: result.hasMore,
         sessionsTotalCount: result.totalCount,
         sessionsLoading: false,
+        sessionsPagesLoaded: 1,
       });
 
       const cacheProjectId = get().selectedProjectId;
@@ -162,6 +173,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
           cursor: result.nextCursor,
           hasMore: result.hasMore,
           totalCount: result.totalCount,
+          pagesLoaded: 1,
           timestamp: Date.now(),
         });
       }
@@ -211,6 +223,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
           sessionsHasMore: result.hasMore,
           sessionsTotalCount: stableTotalCount,
           sessionsLoadingMore: false,
+          sessionsPagesLoaded: prevState.sessionsPagesLoaded + 1,
         };
       });
     } catch (error) {
@@ -229,6 +242,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
       sessionsHasMore: false,
       sessionsTotalCount: 0,
       sessionsLoadingMore: false,
+      sessionsPagesLoaded: 0,
       sessionsError: null,
     });
   },
@@ -289,13 +303,22 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         return;
       }
 
-      let mergedSessions: Session[] = [];
+      let mergedSessions: Session[] | null = null;
       set((prevState) => {
+        // Re-check INSIDE the updater. The pre-await guard can't see a project
+        // switch that happened while this request was in flight, and the
+        // generation counter is per-project so it won't catch it either. Merging
+        // A's page into B's list would splice the two together — and the cache
+        // write below would make that permanent, since selectProject prefers the
+        // cached branch and never cold-loads again.
+        if (prevState.selectedProjectId !== projectId) {
+          return {};
+        }
+
         // A transient scan failure surfaces as an empty page (ProjectScanner's
         // listSessionsPaginated catch). Never let that blank a populated list —
         // it renders as a bogus "No sessions found" empty state.
         if (result.sessions.length === 0 && prevState.sessions.length > 0) {
-          mergedSessions = prevState.sessions;
           return {};
         }
 
@@ -304,45 +327,96 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         // rows vanished, the "load more" row reappeared, the virtualizer auto-paged,
         // and the next file event did it all again. That loop is the sidebar jank.
         const fresh = new Map(result.sessions.map((s) => [s.id, s]));
-        const updated = prevState.sessions.map((s) => fresh.get(s.id) ?? s);
-        const known = new Set(prevState.sessions.map((s) => s.id));
-        const added = result.sessions.filter((s) => !known.has(s.id));
-        mergedSessions = added.length > 0 ? [...added, ...updated] : updated;
+        const previouslyKnown = new Set(prevState.sessions.map((s) => s.id));
+        const added = result.sessions.filter((s) => !previouslyKnown.has(s.id));
 
-        // Only page 1 is loaded → adopt the fresh cursor. Deeper pages are loaded →
-        // keep ours; the page-1 cursor would rewind pagination and re-arm the
-        // "load more" row we just scrolled past.
-        const onlyFirstPageLoaded = prevState.sessions.length <= result.sessions.length;
+        // Page 1 is authoritative for its own window, so a row inside that window
+        // that's absent from the response has been deleted and must be dropped.
+        // Without this the merge could only ever grow, and a `rm`'d session would
+        // sit in the sidebar for the life of the process.
+        //
+        // The window is measured on the PREVIOUS list, so it has to exclude the
+        // rows that are new this round: N new sessions push the last N of the old
+        // page-1 down into page 2, where this response says nothing about them.
+        // Counting them as deletions would evict live sessions on every refresh
+        // that happens to see a new one.
+        const windowSize = Math.max(0, result.sessions.length - added.length);
+        const survivors = prevState.sessions.filter((s, i) => i >= windowSize || fresh.has(s.id));
+
+        const updated = survivors.map((s) => fresh.get(s.id) ?? s);
+        const merged = added.length > 0 ? [...added, ...updated] : updated;
+        mergedSessions = merged;
+
+        // Adopt the fresh cursor only while page 1 is all we hold. Once deeper
+        // pages are loaded, the page-1 cursor would rewind pagination and re-arm
+        // the "load more" row we just scrolled past. Tracked with an explicit
+        // counter rather than comparing array lengths — a merged-in new session or
+        // an out-of-page pinned row makes the list longer than page 1 without any
+        // deeper page having been fetched, which would strand the cursor forever.
+        const onlyFirstPageLoaded = prevState.sessionsPagesLoaded <= 1;
 
         return {
-          sessions: mergedSessions,
+          sessions: merged,
           sessionsCursor: onlyFirstPageLoaded ? result.nextCursor : prevState.sessionsCursor,
           sessionsHasMore: onlyFirstPageLoaded ? result.hasMore : prevState.sessionsHasMore,
-          // Monotonic, mirroring fetchSessionsMore — a page-1 count must never
-          // shrink a total established by deeper pages.
+          // `includeTotalCount: false` above means result.totalCount is nominal, so
+          // this is really "keep the established total, floored at what we hold".
           sessionsTotalCount: Math.max(
             prevState.sessionsTotalCount,
             result.totalCount,
-            mergedSessions.length
+            merged.length
           ),
         };
       });
 
+      // Null when the updater bailed (project switched, or an empty page we chose
+      // to ignore) — nothing was applied, so nothing should be cached.
+      if (mergedSessions === null) {
+        return;
+      }
+
       const latest = get();
-      get()._sessionCache.set(projectId, {
+      latest._sessionCache.set(projectId, {
         sessions: mergedSessions,
         cursor: latest.sessionsCursor,
         hasMore: latest.sessionsHasMore,
         totalCount: latest.sessionsTotalCount,
+        pagesLoaded: latest.sessionsPagesLoaded,
         timestamp: Date.now(),
       });
 
       // Pinned/hidden rows can live outside page 1; without this they were dropped
       // on every refresh since only fetchSessionsInitial re-loaded them.
-      void get().loadPinnedSessions();
-      void get().loadHiddenSessions();
+      void latest.loadPinnedSessions();
+      void latest.loadHiddenSessions();
     } catch (error) {
       logger.error('refreshSessionsInPlace error:', error);
+    }
+  },
+
+  // Remove a session that no longer exists on disk. The page-1 refresh can only
+  // reconcile deletions inside its own window, so the `unlink` event is the only
+  // reliable signal for a session that has been paged past.
+  removeSessionFromList: (sessionId: string) => {
+    const state = get();
+    if (!state.sessions.some((s) => s.id === sessionId)) {
+      return;
+    }
+    const remaining = state.sessions.filter((s) => s.id !== sessionId);
+    set({
+      sessions: remaining,
+      sessionsTotalCount: Math.max(0, state.sessionsTotalCount - 1),
+    });
+
+    // Keep the cache consistent, otherwise switching away and back resurrects it.
+    const projectId = state.selectedProjectId;
+    const cached = projectId ? state._sessionCache.get(projectId) : undefined;
+    if (projectId && cached) {
+      state._sessionCache.set(projectId, {
+        ...cached,
+        sessions: cached.sessions.filter((s) => s.id !== sessionId),
+        totalCount: Math.max(0, cached.totalCount - 1),
+      });
     }
   },
 

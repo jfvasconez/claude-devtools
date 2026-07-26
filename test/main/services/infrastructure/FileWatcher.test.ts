@@ -656,7 +656,10 @@ describe('FileWatcher', () => {
       s.cleanup();
     });
 
-    it('skips malformed JSON rather than reporting a bogus state', async () => {
+    // An unreadable file must not emit AT ALL. `state: undefined` on the wire means
+    // "removed", and the renderer clears the session's live state when it sees it —
+    // so emitting on a torn read would blank a working session's indicator mid-turn.
+    it('stays silent on malformed JSON rather than reporting a cleared state', async () => {
       const s = setupStateWatcher();
       // The hook writes non-atomically, so a read can land mid-write.
       fs.writeFileSync(path.join(s.stateDir, 'session-1.json'), '{"state":"wor', 'utf8');
@@ -664,7 +667,42 @@ describe('FileWatcher', () => {
       s.handleStateChange('change', 'session-1.json');
       await settle();
 
-      expect(s.terminalEvents).toEqual([{ sessionId: 'session-1', state: undefined }]);
+      expect(s.terminalEvents).toHaveLength(0);
+
+      s.cleanup();
+    });
+
+    it('stays silent when the payload has the wrong shape', async () => {
+      const s = setupStateWatcher();
+      // Valid JSON, but `ts` is an ISO string instead of unix seconds.
+      fs.writeFileSync(
+        path.join(s.stateDir, 'session-1.json'),
+        JSON.stringify({ state: 'working', ts: '2026-07-25T00:00:00Z' }),
+        'utf8'
+      );
+
+      s.handleStateChange('change', 'session-1.json');
+      await settle();
+
+      expect(s.terminalEvents).toHaveLength(0);
+
+      s.cleanup();
+    });
+
+    it('drops a non-string cwd instead of passing it through', async () => {
+      const s = setupStateWatcher();
+      fs.writeFileSync(
+        path.join(s.stateDir, 'session-1.json'),
+        JSON.stringify({ state: 'working', ts: 1_700_000_000, cwd: 42 }),
+        'utf8'
+      );
+
+      s.handleStateChange('change', 'session-1.json');
+      await settle();
+
+      expect(s.terminalEvents).toEqual([
+        { sessionId: 'session-1', state: { state: 'working', ts: 1_700_000_000, cwd: undefined } },
+      ]);
 
       s.cleanup();
     });
@@ -715,6 +753,32 @@ describe('FileWatcher', () => {
       vi.advanceTimersByTime(150);
 
       expect(process).toHaveBeenCalledTimes(1);
+
+      watcher.stop();
+    });
+
+    // Throttling must not mean "first event wins". `changeType` only self-corrects
+    // for `rename`; a leading `change` hard-codes type 'change', so a delete
+    // arriving mid-window would be emitted as a modification — skipping the
+    // project-wide cache sweep and error-tracking cleanup, and never telling the
+    // renderer to drop the row.
+    it('runs the LAST callback of a burst, not the first', () => {
+      vi.useFakeTimers();
+      const watcher = new FileWatcher(new DataCache(50, 10, false), '/tmp/projects', '/tmp/todos');
+      const watcherAny = watcher as unknown as {
+        handleProjectsChange: (t: string, f: string) => void;
+        processProjectsChange: (t: string, f: string) => Promise<void>;
+      };
+      const process = vi
+        .spyOn(watcherAny, 'processProjectsChange')
+        .mockResolvedValue(undefined as never);
+
+      watcherAny.handleProjectsChange('change', 'proj/session-1.jsonl');
+      watcherAny.handleProjectsChange('rename', 'proj/session-1.jsonl');
+      vi.advanceTimersByTime(150);
+
+      expect(process).toHaveBeenCalledTimes(1);
+      expect(process).toHaveBeenCalledWith('rename', 'proj/session-1.jsonl');
 
       watcher.stop();
     });

@@ -14,9 +14,10 @@
  *     after a prompt is submitted and again the instant the final text block lands.
  *     It's what keeps the indicator working when the hook isn't installed.
  *
- * Resolution is PER TAB. The previous inline selector keyed off the global
- * `selectedSessionId` and read the sidebar's `sessions[]`, so in split panes every
- * pane reported the focused session's state rather than its own.
+ * Resolution is per tab ONCE THE TAB'S DETAIL HAS LOADED; before that it falls
+ * back to global state. The previous inline selector keyed off the global
+ * `selectedSessionId` unconditionally, so in split panes every pane reported the
+ * focused session's state rather than its own.
  */
 
 import { getTerminalVisual, type TerminalStateInfo } from '@renderer/constants/sessionStatus';
@@ -30,7 +31,11 @@ export interface SessionLiveState {
   sessionId: string | null;
   /** True when the terminal reports `working`, or the transcript looks mid-turn. */
   isLive: boolean;
-  /** Resolved wezterm visual (color/label/pulse), or null when not live in the terminal. */
+  /**
+   * Resolved wezterm visual (color/label/pulse), or null when there's no usable
+   * terminal state — missing, stale, or the session ended. Note this is a wider
+   * notion than `isLive`: `ready`/`attention`/`done` all yield a visual.
+   */
   visual: TerminalVisual | null;
   /** Raw hook payload, for callers that need `state`/`ts` directly. */
   terminalState: TerminalStateInfo | null;
@@ -69,9 +74,14 @@ export function useSessionLiveState(tabId?: string | null): SessionLiveState {
 
       return {
         sessionId,
-        // `working` is the only terminal state that means "busy right now" —
-        // ready/attention/done are all resting states and must not pulse.
-        isLive: terminalState?.state === 'working' || isOngoing,
+        // Derived from `visual`, NOT from the raw payload, so both go through
+        // getTerminalVisual's staleness cut-off. Reading `terminalState.state`
+        // directly meant a session killed mid-turn — whose file is left saying
+        // `working` because the hook only writes `default` on SessionEnd — stayed
+        // "live" forever: a permanent "Thinking…" banner next to no status dot,
+        // since the dot already honoured the cut-off. `pulse` is true only for
+        // `working`; ready/attention/done are resting states.
+        isLive: visual?.pulse === true || isOngoing,
         visual,
         terminalState,
       };

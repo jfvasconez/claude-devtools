@@ -282,6 +282,7 @@ describe('sessionSlice', () => {
         sessionsCursor: 'deep-cursor',
         sessionsHasMore: true,
         sessionsTotalCount: 45,
+        sessionsPagesLoaded: 3,
       });
 
       // Page 1 comes back with one brand-new session at the head.
@@ -309,6 +310,7 @@ describe('sessionSlice', () => {
         sessions: [{ id: 'a' }] as never[],
         sessionsCursor: 'old-cursor',
         sessionsHasMore: false,
+        sessionsPagesLoaded: 1,
       });
 
       mockAPI.getSessionsPaginated.mockResolvedValue({
@@ -344,6 +346,85 @@ describe('sessionSlice', () => {
       expect(store.getState().sessions).toHaveLength(2);
     });
 
+    // The merge must be able to shrink, or a deleted session sits in the sidebar
+    // for the life of the process — nothing else prunes the list, and the cache
+    // outlives project switches.
+    it('should drop a session that vanished from page 1', async () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as never[],
+        sessionsPagesLoaded: 1,
+      });
+
+      mockAPI.getSessionsPaginated.mockResolvedValue({
+        sessions: [{ id: 'a' }, { id: 'c' }] as never[],
+        nextCursor: null,
+        hasMore: false,
+        totalCount: 2,
+      });
+
+      await store.getState().refreshSessionsInPlace('project-1');
+
+      expect(store.getState().sessions.map((s) => s.id)).toEqual(['a', 'c']);
+    });
+
+    // A new session pushes the tail of the old page 1 down into page 2, which this
+    // response says nothing about. Treating that as a deletion would evict a live
+    // session on every refresh that happens to see a new one.
+    it('should not mistake a session pushed out of page 1 for a deletion', async () => {
+      const loaded = Array.from({ length: 3 }, (_, i) => ({ id: `s${i}` }));
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: loaded as never[],
+        sessionsPagesLoaded: 1,
+      });
+
+      // Page size is effectively 3 here: a new session arrives, so s2 falls off.
+      mockAPI.getSessionsPaginated.mockResolvedValue({
+        sessions: [{ id: 'new' }, { id: 's0' }, { id: 's1' }] as never[],
+        nextCursor: 'c',
+        hasMore: true,
+        totalCount: 4,
+      });
+
+      await store.getState().refreshSessionsInPlace('project-1');
+
+      expect(store.getState().sessions.map((s) => s.id)).toEqual(['new', 's0', 's1', 's2']);
+    });
+
+    // The pre-await guard can't see a switch that happens while the request is in
+    // flight, and the generation counter is per-project so it won't catch it either.
+    it('should not merge into another project after a mid-flight switch', async () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: [{ id: 'a-1' }] as never[],
+      });
+
+      let resolveRequest: ((value: unknown) => void) | undefined;
+      mockAPI.getSessionsPaginated.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRequest = resolve as (value: unknown) => void;
+          })
+      );
+
+      const inFlight = store.getState().refreshSessionsInPlace('project-1');
+
+      // User switches to project 2 before project 1's response lands.
+      store.setState({ selectedProjectId: 'project-2', sessions: [{ id: 'b-1' }] as never[] });
+
+      resolveRequest?.({
+        sessions: [{ id: 'a-1' }, { id: 'a-2' }] as never[],
+        nextCursor: null,
+        hasMore: false,
+        totalCount: 2,
+      });
+      await inFlight;
+
+      expect(store.getState().sessions.map((s) => s.id)).toEqual(['b-1']);
+      expect(store.getState()._sessionCache.has('project-1')).toBe(false);
+    });
+
     it('should update changed session metadata in place', async () => {
       store.setState({
         selectedProjectId: 'project-1',
@@ -361,6 +442,52 @@ describe('sessionSlice', () => {
 
       expect(store.getState().sessions).toHaveLength(1);
       expect((store.getState().sessions[0] as { messageCount?: number }).messageCount).toBe(9);
+    });
+  });
+
+  describe('removeSessionFromList', () => {
+    it('should drop the session and shrink the total', () => {
+      store.setState({
+        sessions: [{ id: 'a' }, { id: 'b' }] as never[],
+        sessionsTotalCount: 2,
+      });
+
+      store.getState().removeSessionFromList('a');
+
+      expect(store.getState().sessions.map((s) => s.id)).toEqual(['b']);
+      expect(store.getState().sessionsTotalCount).toBe(1);
+    });
+
+    // Otherwise switching away and back resurrects the deleted row from cache.
+    it('should evict the session from the project cache too', () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: [{ id: 'a' }, { id: 'b' }] as never[],
+        sessionsTotalCount: 2,
+      });
+      store.getState()._sessionCache.set('project-1', {
+        sessions: [{ id: 'a' }, { id: 'b' }] as never[],
+        cursor: null,
+        hasMore: false,
+        totalCount: 2,
+        pagesLoaded: 1,
+        timestamp: 0,
+      });
+
+      store.getState().removeSessionFromList('a');
+
+      const cached = store.getState()._sessionCache.get('project-1');
+      expect(cached?.sessions.map((s) => s.id)).toEqual(['b']);
+      expect(cached?.totalCount).toBe(1);
+    });
+
+    it('should be a no-op for a session it does not hold', () => {
+      const before = [{ id: 'a' }] as never[];
+      store.setState({ sessions: before });
+
+      store.getState().removeSessionFromList('nope');
+
+      expect(store.getState().sessions).toBe(before);
     });
   });
 

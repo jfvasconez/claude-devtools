@@ -69,19 +69,22 @@ export const useStore = create<AppState>()((...args) => ({
 export function initializeNotificationListeners(): () => void {
   const cleanupFns: (() => void)[] = [];
   // Diagnostic: how often the incremental append path gave up and fell back to a
-  // full re-parse. Should stay near zero while a session streams.
+  // full re-parse. Deltas for sessions that aren't open are counted too, so this
+  // is only meaningful as a trend, not an absolute.
   let appendFallbackCount = 0;
   const pendingSessionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const pendingProjectRefreshTimers = new Map<
     string,
-    { timer: ReturnType<typeof setTimeout>; delayMs: number }
+    { timer: ReturnType<typeof setTimeout>; dueAt: number }
   >();
   const SESSION_REFRESH_DEBOUNCE_MS = 150;
   const PROJECT_REFRESH_DEBOUNCE_MS = 300;
-  // A `change` to a session already in the sidebar only moves cosmetic row
-  // metadata (timestamps, counts). The chat pane has its own live path, so these
-  // coalesce on a slow window instead of refetching the page every ~300ms while a
-  // session streams. New/unknown sessions still use the fast window above.
+  // A `change` to a session already in the sidebar only moves row metadata
+  // (timestamps, counts, and the transcript-derived status dot), so these coalesce
+  // on a slow window instead of refetching the page every ~300ms while a session
+  // streams. New/unknown sessions still use the fast window above. Trade-off: the
+  // sidebar dot can lag by up to this long — the chat pane stays current via
+  // `terminal-state-change`, but only when the wezterm hook is installed.
   const KNOWN_SESSION_PROJECT_REFRESH_MS = 2000;
   // The session the user is actively looking at (focused pane's active tab /
   // selectedSessionId) gets a much shorter debounce than background sessions so
@@ -164,21 +167,26 @@ export function initializeNotificationListeners(): () => void {
     projectId: string,
     delayMs: number = PROJECT_REFRESH_DEBOUNCE_MS
   ): void => {
-    const existingTimer = pendingProjectRefreshTimers.get(projectId);
-    if (existingTimer) {
-      // A pending fast refresh (a new session appeared) outranks a slow one — don't
-      // let a stream of low-priority `change` events push it back.
-      if (existingTimer.delayMs <= delayMs) {
+    // Compare DEADLINES, not delays. What matters is when the refresh lands: a
+    // 300ms request arriving 1.9s into a pending 2s timer would, on a delay
+    // comparison, cancel it and reschedule 200ms LATER than doing nothing.
+    // Rescheduling is only ever right if it pulls the refresh earlier.
+    const dueAt = Date.now() + delayMs;
+    const existing = pendingProjectRefreshTimers.get(projectId);
+    if (existing) {
+      if (existing.dueAt <= dueAt) {
         return;
       }
-      clearTimeout(existingTimer.timer);
+      clearTimeout(existing.timer);
     }
+    // Note: same-priority events do NOT extend the window — the deadline check
+    // above returns early — so this coalesces as a throttle, not a debounce.
     const timer = setTimeout(() => {
       pendingProjectRefreshTimers.delete(projectId);
       const state = useStore.getState();
       void state.refreshSessionsInPlace(projectId);
     }, delayMs);
-    pendingProjectRefreshTimers.set(projectId, { timer, delayMs });
+    pendingProjectRefreshTimers.set(projectId, { timer, dueAt });
   };
 
   // Listen for new notifications from main process
@@ -289,19 +297,27 @@ export function initializeNotificationListeners(): () => void {
   // Listen for file changes to auto-refresh current session and detect new sessions
   if (api.onFileChange) {
     const cleanup = api.onFileChange((event) => {
-      // Skip unlink events
-      if (event.type === 'unlink') {
-        return;
-      }
-
       const state = useStore.getState();
       const selectedProjectId = state.selectedProjectId;
       const selectedProjectBaseId = getBaseProjectId(selectedProjectId);
       const eventProjectBaseId = getBaseProjectId(event.projectId);
+
+      // A deleted session must leave the sidebar. This is the precise signal for
+      // it; the periodic page-1 refresh can only reconcile deletions inside the
+      // first page, so without this a removed session outside that window would
+      // linger for the life of the process.
+      if (event.type === 'unlink') {
+        if (!event.isSubagent && event.sessionId) {
+          useStore.getState().removeSessionFromList(event.sessionId);
+        }
+        return;
+      }
       // A projectId-less event no longer counts as "the selected project changed".
       // Terminal-state writes used to arrive here with no projectId and matched
       // unconditionally, so every prompt submit and tool call refetched the sidebar
-      // page. Those now come over `terminal-state-change` instead.
+      // page. Those now come over `terminal-state-change` instead, and the only
+      // remaining `file-change` emitter always sets projectId. Note this also
+      // disables the projectId-less fallback refresh further down.
       const matchesSelectedProject =
         !!selectedProjectId && selectedProjectBaseId === eventProjectBaseId;
       const isTopLevelSessionEvent = !event.isSubagent;
@@ -386,14 +402,22 @@ export function initializeNotificationListeners(): () => void {
         lastAppendAppliedAt.set(event.sessionId, Date.now());
         return;
       }
-      // Fallback: gap/overlap, session not loaded, or malformed payload → full refetch
-      // via the existing debounced path (which no-ops if the session isn't viewed).
-      // Frequent fallbacks mean the tailer keeps losing its baseline (e.g. LRU
-      // eviction) and the live path has silently degraded to full re-parses.
+      // Fallback: the session isn't open in any pane, the delta didn't line up with
+      // our baseline (gap/overlap, typically after the tailer re-anchored), or the
+      // payload was malformed. Falls back to the debounced full refetch, which
+      // no-ops if the session isn't being viewed.
+      //
+      // A steady stream of these means the live path has quietly degraded to full
+      // re-parses — the exact cost the append path exists to avoid. Reported at
+      // `error` because `warn` is suppressed in production builds, and only on
+      // threshold crossings because the failure mode is itself a burst.
       appendFallbackCount += 1;
-      logger.warn(
-        `session-append fallback #${appendFallbackCount} for ${event.sessionId} — full refetch`
-      );
+      if (appendFallbackCount === 5 || appendFallbackCount % 50 === 0) {
+        logger.error(
+          `session-append degraded: ${appendFallbackCount} fallbacks to full refetch ` +
+            `(latest ${event.sessionId}). Check SessionTailer baseline retention.`
+        );
+      }
       const state = useStore.getState();
       const sessionTab = state
         .getAllPaneTabs()

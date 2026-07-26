@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
+import { shouldAutoLoadMore } from './autoLoadMore';
 import { SessionItem } from './SessionItem';
 
 import type { Session } from '@renderer/types/data';
@@ -96,8 +97,6 @@ const HEADER_HEIGHT = 28;
 const SESSION_HEIGHT = 48; // Must match h-[48px] in SessionItem.tsx
 const LOADER_HEIGHT = 36;
 const OVERSCAN = 5;
-/** How close to the bottom the user must actually be before auto-paging. */
-const LOAD_MORE_THRESHOLD_PX = 200;
 
 export const DateGroupedSessions = (): React.JSX.Element => {
   const {
@@ -323,17 +322,10 @@ export const DateGroupedSessions = (): React.JSX.Element => {
     const lastItem = virtualRows[virtualRowsLength - 1];
     if (!lastItem) return;
 
-    // Gate on the SCROLL POSITION, not just the last rendered index. The
-    // virtualizer's overscan renders rows past the viewport, so the old index
-    // check fired whenever the loader row landed in that margin — including
-    // right after a background refresh, which is what made the sidebar page
-    // itself in and out on a loop. A list that doesn't overflow is fully
-    // visible, so paging is still correct there.
+    // Gate on the SCROLL POSITION, not just the last rendered index — see
+    // shouldAutoLoadMore.
     const scroller = parentRef.current;
-    const nearBottom =
-      !scroller ||
-      scroller.scrollHeight <= scroller.clientHeight ||
-      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < LOAD_MORE_THRESHOLD_PX;
+    const nearBottom = !scroller || shouldAutoLoadMore(scroller);
 
     if (
       nearBottom &&
