@@ -20,7 +20,6 @@ import { TeammateMessageItem } from './items/TeammateMessageItem';
 import { TextItem } from './items/TextItem';
 import { ThinkingItem } from './items/ThinkingItem';
 import { MarkdownViewer } from './viewers/MarkdownViewer';
-
 import { displayItemFilterType, isItemDefaultCollapsed } from './chatItemFilter';
 
 import type { AIGroupDisplayItem } from '@renderer/types/groups';
@@ -51,6 +50,12 @@ interface DisplayItemListProps {
   notificationColorMap?: Map<string, TriggerColor>;
   /** Optional callback to register tool element refs for scroll targeting */
   registerToolRef?: (toolId: string, el: HTMLDivElement | null) => void;
+  /**
+   * Fade/slide newly-mounted items in. Set only for the in-progress group, so the
+   * reveal reads as blocks streaming in rather than the whole history animating on
+   * load.
+   */
+  animateNewItems?: boolean;
 }
 
 /**
@@ -86,6 +91,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   highlightColor,
   notificationColorMap,
   registerToolRef,
+  animateNewItems = false,
 }: Readonly<DisplayItemListProps>): React.JSX.Element {
   /**
    * Tri-state expansion: an explicit expand/collapse wins; otherwise fall back to the
@@ -124,7 +130,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
     <div className="space-y-2">
       {items.map((item, index) => {
         // Filter: skip hidden types without disturbing `index` (keeps keys/collapse stable).
-        if (hiddenFilterTypes && hiddenFilterTypes.has(displayItemFilterType(item))) {
+        if (hiddenFilterTypes?.has(displayItemFilterType(item))) {
           return null;
         }
 
@@ -361,6 +367,10 @@ export const DisplayItemList = React.memo(function DisplayItemList({
         return (
           <div
             key={itemKey}
+            // Reveal newly-streamed blocks. Only mounting elements animate — React
+            // reconciles existing items by key and re-renders don't restart a CSS
+            // animation — so this fires per arriving block, not on every update.
+            className={animateNewItems ? 'animate-block-in' : undefined}
             style={
               replyLinkToolId !== null
                 ? { opacity: isDimmed ? 0.2 : 1, transition: 'opacity 150ms ease' }

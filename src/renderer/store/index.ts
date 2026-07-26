@@ -3,6 +3,7 @@
  */
 
 import { api } from '@renderer/api';
+import { createLogger } from '@shared/utils/logger';
 import { create } from 'zustand';
 
 import { createConfigSlice } from './slices/configSlice';
@@ -26,6 +27,8 @@ import { createUpdateSlice } from './slices/updateSlice';
 import type { DetectedError } from '../types/data';
 import type { AppState } from './types';
 import type { UpdaterStatus } from '@shared/types';
+
+const logger = createLogger('Store');
 
 // =============================================================================
 // Store Creation
@@ -65,10 +68,21 @@ export const useStore = create<AppState>()((...args) => ({
  */
 export function initializeNotificationListeners(): () => void {
   const cleanupFns: (() => void)[] = [];
+  // Diagnostic: how often the incremental append path gave up and fell back to a
+  // full re-parse. Should stay near zero while a session streams.
+  let appendFallbackCount = 0;
   const pendingSessionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const pendingProjectRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const pendingProjectRefreshTimers = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; delayMs: number }
+  >();
   const SESSION_REFRESH_DEBOUNCE_MS = 150;
   const PROJECT_REFRESH_DEBOUNCE_MS = 300;
+  // A `change` to a session already in the sidebar only moves cosmetic row
+  // metadata (timestamps, counts). The chat pane has its own live path, so these
+  // coalesce on a slow window instead of refetching the page every ~300ms while a
+  // session streams. New/unknown sessions still use the fast window above.
+  const KNOWN_SESSION_PROJECT_REFRESH_MS = 2000;
   // The session the user is actively looking at (focused pane's active tab /
   // selectedSessionId) gets a much shorter debounce than background sessions so
   // its chat window feels near-instant. A small floor is kept for very long
@@ -146,17 +160,25 @@ export function initializeNotificationListeners(): () => void {
     pendingSessionRefreshTimers.set(key, timer);
   };
 
-  const scheduleProjectRefresh = (projectId: string): void => {
+  const scheduleProjectRefresh = (
+    projectId: string,
+    delayMs: number = PROJECT_REFRESH_DEBOUNCE_MS
+  ): void => {
     const existingTimer = pendingProjectRefreshTimers.get(projectId);
     if (existingTimer) {
-      clearTimeout(existingTimer);
+      // A pending fast refresh (a new session appeared) outranks a slow one — don't
+      // let a stream of low-priority `change` events push it back.
+      if (existingTimer.delayMs <= delayMs) {
+        return;
+      }
+      clearTimeout(existingTimer.timer);
     }
     const timer = setTimeout(() => {
       pendingProjectRefreshTimers.delete(projectId);
       const state = useStore.getState();
       void state.refreshSessionsInPlace(projectId);
-    }, PROJECT_REFRESH_DEBOUNCE_MS);
-    pendingProjectRefreshTimers.set(projectId, timer);
+    }, delayMs);
+    pendingProjectRefreshTimers.set(projectId, { timer, delayMs });
   };
 
   // Listen for new notifications from main process
@@ -276,9 +298,12 @@ export function initializeNotificationListeners(): () => void {
       const selectedProjectId = state.selectedProjectId;
       const selectedProjectBaseId = getBaseProjectId(selectedProjectId);
       const eventProjectBaseId = getBaseProjectId(event.projectId);
+      // A projectId-less event no longer counts as "the selected project changed".
+      // Terminal-state writes used to arrive here with no projectId and matched
+      // unconditionally, so every prompt submit and tool call refetched the sidebar
+      // page. Those now come over `terminal-state-change` instead.
       const matchesSelectedProject =
-        !!selectedProjectId &&
-        (eventProjectBaseId == null || selectedProjectBaseId === eventProjectBaseId);
+        !!selectedProjectId && selectedProjectBaseId === eventProjectBaseId;
       const isTopLevelSessionEvent = !event.isSubagent;
       const isUnknownSessionInSidebar =
         event.sessionId == null ||
@@ -291,7 +316,13 @@ export function initializeNotificationListeners(): () => void {
       // Refresh sidebar session list when a new session appears or an existing session updates.
       if (shouldRefreshSidebar) {
         if (matchesSelectedProject && selectedProjectId) {
-          scheduleProjectRefresh(selectedProjectId);
+          // A known session merely growing is cosmetic for the sidebar; coalesce it
+          // on the slow window so a streaming session doesn't drive the list.
+          const isKnownSessionUpdate = !isUnknownSessionInSidebar && event.type === 'change';
+          scheduleProjectRefresh(
+            selectedProjectId,
+            isKnownSessionUpdate ? KNOWN_SESSION_PROJECT_REFRESH_MS : PROJECT_REFRESH_DEBOUNCE_MS
+          );
         }
       }
 
@@ -326,6 +357,22 @@ export function initializeNotificationListeners(): () => void {
     }
   }
 
+  // Listen for live terminal-state changes (wezterm hook). Patched straight into
+  // state — no refetch, no fingerprint check. This is what makes the chat pane's
+  // "Thinking…" indicator appear the moment a prompt is submitted, before Claude
+  // has written anything to the JSONL.
+  if (api.onTerminalStateChange) {
+    const cleanup = api.onTerminalStateChange((event) => {
+      if (!event?.sessionId) {
+        return;
+      }
+      useStore.getState().applyTerminalStateChange(event);
+    });
+    if (typeof cleanup === 'function') {
+      cleanupFns.push(cleanup);
+    }
+  }
+
   // Listen for incremental session-append deltas (open-session live updates).
   // Applied in place with no getSessionDetail re-fetch; on any inconsistency we fall
   // back to the existing full-refresh path.
@@ -341,6 +388,12 @@ export function initializeNotificationListeners(): () => void {
       }
       // Fallback: gap/overlap, session not loaded, or malformed payload → full refetch
       // via the existing debounced path (which no-ops if the session isn't viewed).
+      // Frequent fallbacks mean the tailer keeps losing its baseline (e.g. LRU
+      // eviction) and the live path has silently degraded to full re-parses.
+      appendFallbackCount += 1;
+      logger.warn(
+        `session-append fallback #${appendFallbackCount} for ${event.sessionId} — full refetch`
+      );
       const state = useStore.getState();
       const sessionTab = state
         .getAllPaneTabs()
@@ -478,7 +531,7 @@ export function initializeNotificationListeners(): () => void {
       clearTimeout(timer);
     }
     pendingSessionRefreshTimers.clear();
-    for (const timer of pendingProjectRefreshTimers.values()) {
+    for (const { timer } of pendingProjectRefreshTimers.values()) {
       clearTimeout(timer);
     }
     pendingProjectRefreshTimers.clear();

@@ -492,6 +492,28 @@ body.theme-transitioning {
   overflow: hidden;
 }
 
+/*
+ * Reveal for blocks arriving in a live session. Claude Code flushes one JSONL
+ * line per completed content block, so blocks land discretely — this softens the
+ * pop-in so a streaming turn reads as continuous rather than as jumps.
+ */
+@keyframes block-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .animate-block-in {
+    animation: block-in 180ms ease-out both;
+  }
+}
+
 .skeleton-card::after {
   content: '';
   position: absolute;

@@ -1,24 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { OngoingBanner } from '@renderer/components/common/OngoingIndicator';
 import { isNearBottom, useAutoScrollBottom } from '@renderer/hooks/useAutoScrollBottom';
+import { useSessionLiveState } from '@renderer/hooks/useSessionLiveState';
 import { useTabNavigationController } from '@renderer/hooks/useTabNavigationController';
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
+import { enhanceAIGroup } from '@renderer/utils/aiGroupEnhancer';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronsDown, Loader2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
+import { SessionContextPanel } from './SessionContextPanel/index';
 import { ChatFilterBar } from './ChatFilterBar';
 import {
   ALL_FILTER_TYPES,
+  type FilterType,
   getAIGroupFilterTypes,
   isAIGroupVisible,
-  type FilterType,
 } from './chatItemFilter';
-import { SessionContextPanel } from './SessionContextPanel/index';
-
-import { enhanceAIGroup } from '@renderer/utils/aiGroupEnhancer';
 
 /** Pixels from bottom considered "near bottom" for scroll-button visibility and auto-scroll. */
 const SCROLL_THRESHOLD = 300;
@@ -230,6 +231,13 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   }, [conversation, groupFilterTypes, hiddenFilterTypes]);
 
   const shouldVirtualize = filteredItems.length >= VIRTUALIZATION_THRESHOLD;
+
+  // Show the tail indicator only when the last AI group isn't already rendering its
+  // own ongoing banner, so mid-turn we don't stack two spinners.
+  const { isLive } = useSessionLiveState(tabId);
+  const lastItem = filteredItems[filteredItems.length - 1];
+  const lastGroupHasOwnBanner = lastItem?.type === 'ai' && (lastItem.group.isOngoing ?? false);
+  const showLiveTail = isLive && !lastGroupHasOwnBanner;
   const emptyRenderedSyncCountRef = useRef(0);
 
   const setSearchQueryForTab = useCallback(
@@ -414,10 +422,14 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   // Auto-follow when conversation updates, but only if the user was already near bottom.
   // This preserves manual reading position when the user scrolls up.
   // Disabled during navigation to prevent conflicts with deep-link/search scrolling.
-  const { scrollToBottom } = useAutoScrollBottom([conversation], {
+  // `showLiveTail` is a dep so the tail indicator appearing also pulls the view down —
+  // otherwise the "Thinking…" banner can render just below the fold.
+  const { scrollToBottom } = useAutoScrollBottom([conversation, showLiveTail], {
     threshold: SCROLL_THRESHOLD,
     smoothDuration: 300,
-    autoBehavior: 'auto',
+    // Instant while reading history (jumping is what you want when loading a session);
+    // smooth while streaming, so arriving blocks glide into view instead of snapping.
+    autoBehavior: isLive ? 'smooth' : 'auto',
     disabled: shouldDisableAutoScroll,
     externalRef: scrollContainerRef,
     resetKey: effectiveTabId,
@@ -476,13 +488,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       setIsScrollingToBottom(false);
       checkScrollButton();
     }
-  }, [
-    filteredItems.length,
-    shouldVirtualize,
-    rowVirtualizer,
-    scrollToBottom,
-    checkScrollButton,
-  ]);
+  }, [filteredItems.length, shouldVirtualize, rowVirtualizer, scrollToBottom, checkScrollButton]);
 
   // Re-check button visibility whenever conversation updates
   useEffect(() => {
@@ -980,6 +986,16 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                   />
                 ))
               )}
+
+              {/*
+                Live tail indicator. The per-group banner inside AIChatGroup can only
+                render once an AI group exists, so it can't cover the window between
+                submitting a prompt and Claude's first content block reaching the
+                JSONL — the exact stretch where the app looked frozen. This sits after
+                the last item (both the virtualized and plain branches) and fills that
+                gap, driven by the terminal-state hook.
+              */}
+              {showLiveTail && <OngoingBanner activityKind="thinking" />}
             </div>
           </div>
         </div>

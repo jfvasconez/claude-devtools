@@ -44,6 +44,7 @@ import type {
   SshConnectionStatus,
   SshLastConnection,
   SubagentDetail,
+  TerminalStateChangeEvent,
   TriggerTestResult,
   UpdaterAPI,
   WaterfallData,
@@ -514,6 +515,9 @@ export class HttpAPIClient implements ElectronAPI {
 
   onTodoChange = (callback: (event: FileChangeEvent) => void): (() => void) =>
     this.addEventListener('todo-change', callback);
+
+  onTerminalStateChange = (callback: (event: TerminalStateChangeEvent) => void): (() => void) =>
+    this.addEventListener('terminal-state-change', callback);
 
   // Chunk-bearing payload — revive Date fields (chunk/step/message timestamps) so the
   // group transformer's .getTime() calls work, exactly like the fetch path does.

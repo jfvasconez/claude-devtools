@@ -10,7 +10,11 @@
  * - Detect errors in changed session files and notify NotificationManager
  */
 
-import { type FileChangeEvent, type ParsedMessage } from '@main/types';
+import {
+  type FileChangeEvent,
+  type ParsedMessage,
+  type TerminalStateChangeEvent,
+} from '@main/types';
 import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
 import { getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
@@ -555,8 +559,10 @@ export class FileWatcher extends EventEmitter {
         return;
       }
 
-      // Debounce rapid changes to the same file
-      this.debounce(filename, () => this.processProjectsChange(eventType, filename));
+      // Throttle rather than debounce: a session being appended to continuously
+      // would otherwise keep resetting the timer and never emit until Claude
+      // stopped writing. See `throttle`.
+      this.throttle(filename, () => this.processProjectsChange(eventType, filename));
     } catch (error) {
       logger.error('Error handling projects change:', error);
     }
@@ -606,9 +612,17 @@ export class FileWatcher extends EventEmitter {
     }
 
     if (sessionId) {
-      // Invalidate cache
+      // Invalidate cache. A `change` only affects the one session, so scope the
+      // scanner invalidation to it — a streaming session fires these constantly
+      // and the project-wide sweep forced the sidebar's whole first page to be
+      // re-read from disk each time. add/unlink change the project's file listing
+      // itself, so those still need the project-wide sweep.
       this.dataCache.invalidateSession(projectId, sessionId);
-      this.projectScanner?.invalidateCachesForProject(projectId);
+      if (changeType === 'change') {
+        this.projectScanner?.invalidateCachesForSession(projectId, sessionId);
+      } else {
+        this.projectScanner?.invalidateCachesForProject(projectId);
+      }
       projectPathResolver.invalidateProject(projectId);
       if (changeType === 'unlink') {
         this.clearErrorTracking(fullPath);
@@ -838,13 +852,21 @@ export class FileWatcher extends EventEmitter {
 
   /**
    * Handles file change events in the devtools terminal-state directory.
-   * Each file is `<sessionId>.json`; a change means a session's live terminal
-   * state changed and the session list needs to refresh so status dots update.
+   * Each session has `<sessionId>.json` (the wezterm hook's live state) and may
+   * also have `<sessionId>.statusline.json` (a statusline snapshot). Only the
+   * former is a terminal-state signal.
    */
   private handleStateChange(eventType: string, filename: string): void {
     try {
       // Only handle per-session JSON state files.
       if (!filename.endsWith('.json')) {
+        return;
+      }
+
+      // Skip statusline snapshots: `<sessionId>.statusline.json` is a sibling of
+      // the state file, and treating it as one yields a bogus sessionId of
+      // "<sessionId>.statusline" that matches nothing in the renderer.
+      if (filename.endsWith('.statusline.json')) {
         return;
       }
 
@@ -856,34 +878,56 @@ export class FileWatcher extends EventEmitter {
   }
 
   /**
-   * Process a debounced devtools-state change by emitting a `file-change` event —
-   * the same refresh signal the projects watcher uses, so the renderer re-fetches
-   * sessions (and their terminalState) without a new event channel.
+   * Process a debounced devtools-state change by emitting `terminal-state-change`
+   * with the new state inline.
+   *
+   * This deliberately does NOT reuse the `file-change` channel. The hook writes on
+   * every prompt submit and every PreToolUse, and because state files carry no
+   * projectId the renderer treated each one as "something changed in the selected
+   * project" and refetched the whole sidebar page — the source of the sidebar
+   * thrash. Carrying the state inline lets the renderer patch it in place instead.
    */
   private async processStateChange(eventType: string, filename: string): Promise<void> {
     const sessionId = path.basename(filename, '.json');
     const fullPath = path.join(this.statePath, filename);
     const fileExists = await this.fsProvider.exists(fullPath);
+    const removed = eventType === 'rename' && !fileExists;
 
-    let changeType: FileChangeEvent['type'];
-    if (eventType === 'rename') {
-      changeType = fileExists ? 'add' : 'unlink';
-    } else {
-      changeType = 'change';
+    let state: TerminalStateChangeEvent['state'];
+    if (!removed) {
+      state = await this.readTerminalState(fullPath);
     }
 
-    // No projectId (state files are keyed only by sessionId) — mirrors the
-    // todo-change event shape. Emitted on the file-change channel so the existing
-    // session-refresh path handles it.
-    const event: FileChangeEvent = {
-      type: changeType,
-      path: fullPath,
-      sessionId,
-      isSubagent: false,
-    };
+    const event: TerminalStateChangeEvent = { sessionId, state };
+    this.emit('terminal-state-change', event);
+    logger.info(
+      `FileWatcher: terminal-state ${removed ? 'removed' : (state?.state ?? 'unreadable')} - ${filename}`
+    );
+  }
 
-    this.emit('file-change', event);
-    logger.info(`FileWatcher: ${changeType} terminal-state - ${filename}`);
+  /**
+   * Read and validate a terminal-state file. Returns undefined on any read/parse
+   * failure — the hook writes non-atomically, so a read can land mid-write and
+   * must not be treated as a state change.
+   */
+  private async readTerminalState(
+    fullPath: string
+  ): Promise<TerminalStateChangeEvent['state'] | undefined> {
+    try {
+      const raw = await this.fsProvider.readFile(fullPath);
+      const parsed: unknown = JSON.parse(raw);
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed as { state?: unknown }).state === 'string' &&
+        typeof (parsed as { ts?: unknown }).ts === 'number'
+      ) {
+        return parsed as TerminalStateChangeEvent['state'];
+      }
+    } catch {
+      // Mid-write read or malformed JSON — skip this event, the next write re-fires.
+    }
+    return undefined;
   }
 
   /**
@@ -1054,6 +1098,30 @@ export class FileWatcher extends EventEmitter {
   // ===========================================================================
   // Debouncing
   // ===========================================================================
+
+  /**
+   * Throttle a function call for a specific key: keep at most one pending call,
+   * firing DEBOUNCE_MS after the FIRST event in a burst.
+   *
+   * Used for session JSONL writes. A trailing debounce resets its timer on every
+   * event, so a file being appended faster than the window never fires until the
+   * writes stop — which is exactly the "nothing updates until Claude is done"
+   * behaviour. Bounding the delay instead guarantees an emit every DEBOUNCE_MS
+   * while a session streams.
+   */
+  private throttle(key: string, fn: () => void): void {
+    // Already scheduled — the pending call will pick up the latest file state.
+    if (this.debounceTimers.has(key)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.debounceTimers.delete(key);
+      fn();
+    }, DEBOUNCE_MS);
+
+    this.debounceTimers.set(key, timer);
+  }
 
   /**
    * Debounce a function call for a specific key.

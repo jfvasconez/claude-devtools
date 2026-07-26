@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssVariables';
+import { useSessionLiveState } from '@renderer/hooks/useSessionLiveState';
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useStore } from '@renderer/store';
 import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
@@ -146,11 +147,10 @@ const AIChatGroupInner = ({
     const td = tabId ? s.tabSessionData[tabId] : null;
     return (td?.sessionDetail ?? s.sessionDetail)?.session?.projectPath;
   });
-  const isSessionOngoing = useStore((s) => {
-    const id = s.selectedSessionId;
-    if (!id) return false;
-    return s.sessions.find((sess) => sess.id === id)?.isOngoing ?? false;
-  });
+  // Per-tab, and terminal-state aware — see useSessionLiveState. Keying this off
+  // the global selectedSessionId meant split panes all reported the focused
+  // session's state instead of their own.
+  const { isLive: isSessionOngoing } = useSessionLiveState(tabId);
 
   // Per-tab session data subscriptions, falling back to global state
   const {
@@ -549,23 +549,24 @@ const AIChatGroupInner = ({
             highlightColor={highlightColor}
             notificationColorMap={notificationColorMap}
             registerToolRef={registerToolRef}
+            animateNewItems={isSessionOngoing && (aiGroup.isOngoing ?? false)}
           />
         </div>
       )}
 
       {/* Always-visible Output (hidden when its type is filtered out) */}
       {!lastOutputHidden && (
-      <div>
-        <LastOutputDisplay
-          lastOutput={enhanced.lastOutput}
-          aiGroupId={aiGroup.id}
-          isLastGroup={aiGroup.isOngoing ?? false}
-          isSessionOngoing={isSessionOngoing}
-          ongoingActivityKind={ongoingActivityKind}
-          ongoingToolName={ongoingToolName}
-          ongoingOutputTokens={aiGroup.tokens.output}
-        />
-      </div>
+        <div>
+          <LastOutputDisplay
+            lastOutput={enhanced.lastOutput}
+            aiGroupId={aiGroup.id}
+            isLastGroup={aiGroup.isOngoing ?? false}
+            isSessionOngoing={isSessionOngoing}
+            ongoingActivityKind={ongoingActivityKind}
+            ongoingToolName={ongoingToolName}
+            ongoingOutputTokens={aiGroup.tokens.output}
+          />
+        </div>
       )}
     </div>
   );

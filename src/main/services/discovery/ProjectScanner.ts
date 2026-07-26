@@ -25,9 +25,9 @@ import {
   type Session,
   type SessionCursor,
   type SessionMetadataLevel,
-  type SessionStatus,
   type SessionsByIdsOptions,
   type SessionsPaginationOptions,
+  type SessionStatus,
 } from '@main/types';
 import { analyzeSessionFileMetadata, extractCwd } from '@main/utils/jsonl';
 import {
@@ -1032,7 +1032,10 @@ export class ProjectScanner {
     statuslineMap: Map<string, NonNullable<Session['statusline']>>;
   }> {
     const now = Date.now();
-    if (this.terminalStateCache && now - this.terminalStateCache.timestamp < TERMINAL_STATE_CACHE_TTL_MS) {
+    if (
+      this.terminalStateCache &&
+      now - this.terminalStateCache.timestamp < TERMINAL_STATE_CACHE_TTL_MS
+    ) {
       return this.terminalStateCache;
     }
 
@@ -1243,6 +1246,28 @@ export class ProjectScanner {
     // projectId is URL-encoded; the cache keys are absolute file paths containing the decoded dir
     const decoded = decodeURIComponent(projectId);
     const prefix = path.join(this.projectsDir, decoded);
+    for (const key of this.contentPresenceCache.keys()) {
+      if (key.startsWith(prefix)) this.contentPresenceCache.delete(key);
+    }
+    for (const key of this.sessionMetadataCache.keys()) {
+      if (key.startsWith(prefix)) this.sessionMetadataCache.delete(key);
+    }
+  }
+
+  /**
+   * Invalidate internal caches for a SINGLE session.
+   *
+   * Preferred over {@link invalidateCachesForProject} for `change` events: an
+   * actively streaming session fires one of those every few hundred ms, and
+   * dropping every session's metadata each time forced the sidebar's whole first
+   * page to be re-stat'd and re-read from disk on every refresh.
+   *
+   * The prefix `<projectsDir>/<decoded>/<sessionId>` covers both the session file
+   * (`<sessionId>.jsonl`) and its subagent directory (`<sessionId>/subagents/*`).
+   */
+  invalidateCachesForSession(projectId: string, sessionId: string): void {
+    const decoded = decodeURIComponent(projectId);
+    const prefix = path.join(this.projectsDir, decoded, sessionId);
     for (const key of this.contentPresenceCache.keys()) {
       if (key.startsWith(prefix)) this.contentPresenceCache.delete(key);
     }

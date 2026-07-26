@@ -102,6 +102,7 @@ let sessionTailer: SessionTailer | null = null;
 // File watcher event cleanup functions
 let fileChangeCleanup: (() => void) | null = null;
 let todoChangeCleanup: (() => void) | null = null;
+let terminalStateCleanup: (() => void) | null = null;
 
 /**
  * Resolve production renderer index path.
@@ -130,6 +131,10 @@ function wireFileWatcherEvents(context: ServiceContext): void {
   if (todoChangeCleanup) {
     todoChangeCleanup();
     todoChangeCleanup = null;
+  }
+  if (terminalStateCleanup) {
+    terminalStateCleanup();
+    terminalStateCleanup = null;
   }
 
   // SessionTailer: point it at this context's filesystem and reset baselines, since
@@ -169,6 +174,18 @@ function wireFileWatcherEvents(context: ServiceContext): void {
   };
   context.fileWatcher.on('todo-change', todoChangeHandler);
   todoChangeCleanup = () => context.fileWatcher.off('todo-change', todoChangeHandler);
+
+  // Forward terminal-state changes (wezterm hook) to renderer and HTTP SSE.
+  // Kept off the file-change channel on purpose — see TerminalStateChangeEvent.
+  const terminalStateHandler = (event: unknown): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal-state-change', event);
+    }
+    httpServer?.broadcast('terminal-state-change', event);
+  };
+  context.fileWatcher.on('terminal-state-change', terminalStateHandler);
+  terminalStateCleanup = () =>
+    context.fileWatcher.off('terminal-state-change', terminalStateHandler);
 
   // Forward memory-change events to renderer and HTTP SSE
   const memoryChangeHandler = (event: unknown): void => {
@@ -434,6 +451,10 @@ function shutdownServices(): void {
   if (todoChangeCleanup) {
     todoChangeCleanup();
     todoChangeCleanup = null;
+  }
+  if (terminalStateCleanup) {
+    terminalStateCleanup();
+    terminalStateCleanup = null;
   }
 
   // Dispose all contexts (including local)

@@ -148,6 +148,9 @@ async function start(): Promise<void> {
   localContext.fileWatcher.on('todo-change', (event: unknown) => {
     httpServer.broadcast('todo-change', event);
   });
+  localContext.fileWatcher.on('terminal-state-change', (event: unknown) => {
+    httpServer.broadcast('terminal-state-change', event);
+  });
   localContext.fileWatcher.on('memory-change', (event: unknown) => {
     httpServer.broadcast('memory:changed', event);
   });

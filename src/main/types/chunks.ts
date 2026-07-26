@@ -570,6 +570,24 @@ export interface FileChangeEvent {
   isSubagent: boolean;
 }
 
+/**
+ * Live terminal-state change for a single session, from the wezterm hook's
+ * `${CLAUDE_ROOT}/devtools-state/<sessionId>.json`.
+ *
+ * Deliberately NOT emitted on the `file-change` channel: these fire on every
+ * prompt submit and every PreToolUse, and routing them through `file-change`
+ * made the renderer refetch the whole sidebar page on each one. They carry the
+ * state inline so the renderer can patch it in place with no IPC round-trip —
+ * which also fixes the chat pane, whose `getSessionDetail` refresh is
+ * short-circuited by an unchanged JSONL fingerprint.
+ *
+ * `state` is undefined when the file was removed (session ended / cleaned up).
+ */
+export interface TerminalStateChangeEvent {
+  sessionId: string;
+  state?: { state: string; ts: number; cwd?: string };
+}
+
 // =============================================================================
 // Constants
 // =============================================================================

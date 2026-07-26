@@ -30,6 +30,7 @@ import type {
   SessionsByIdsOptions,
   SessionsPaginationOptions,
   SubagentDetail,
+  TerminalStateChangeEvent,
 } from '@main/types';
 
 // =============================================================================
@@ -440,6 +441,12 @@ export interface ElectronAPI {
   // File change events (real-time updates)
   onFileChange: (callback: (event: FileChangeEvent) => void) => () => void;
   onTodoChange: (callback: (event: FileChangeEvent) => void) => () => void;
+  /**
+   * Live terminal state for a session, from the wezterm hook. Carries the state
+   * inline so the renderer patches it in place — deliberately not folded into
+   * `onFileChange`, whose handler triggers a sidebar refetch.
+   */
+  onTerminalStateChange: (callback: (event: TerminalStateChangeEvent) => void) => () => void;
   /**
    * Incremental append delta for an open session — carries rebuilt chunks so the
    * renderer updates the conversation without a full `getSessionDetail` re-fetch.

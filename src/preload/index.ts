@@ -65,6 +65,7 @@ import {
   CONFIG_UPDATE_TRIGGER,
 } from './constants/ipcChannels';
 
+import type { SessionAppendEvent, TerminalStateChangeEvent } from '@main/types';
 import type {
   AppConfig,
   ClaudeRootFolderSelection,
@@ -87,7 +88,6 @@ import type {
   TriggerTestResult,
   WslClaudeRootCandidate,
 } from '@shared/types';
-import type { SessionAppendEvent } from '@main/types';
 
 // =============================================================================
 // IPC Result Types and Helpers
@@ -396,6 +396,17 @@ const electronAPI: ElectronAPI = {
     close: () => ipcRenderer.invoke(WINDOW_CLOSE),
     isMaximized: () => ipcRenderer.invoke(WINDOW_IS_MAXIMIZED) as Promise<boolean>,
     relaunch: () => ipcRenderer.invoke(APP_RELAUNCH),
+  },
+
+  // Live terminal state from the wezterm hook. Separate from file-change so the
+  // renderer can patch a session's state in place instead of refetching.
+  onTerminalStateChange: (callback: (event: TerminalStateChangeEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: TerminalStateChangeEvent): void =>
+      callback(data);
+    ipcRenderer.on('terminal-state-change', listener);
+    return (): void => {
+      ipcRenderer.removeListener('terminal-state-change', listener);
+    };
   },
 
   onTodoChange: (callback: (event: IpcFileChangePayload) => void): (() => void) => {

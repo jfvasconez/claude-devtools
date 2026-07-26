@@ -84,17 +84,20 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         sessionContextStats: null,
         sessionDetailError: null,
       });
-      // Invalidate stale cache so fetchSessionsInitial() overwrites with fresh data
-      get()._sessionCache.delete(id);
-    } else {
-      set({
-        selectedProjectId: id,
-        sidebarCollapsed: false,
-        ...getSessionResetState(),
-      });
+      // Refresh in place on top of the cached list. fetchSessionsInitial would blank
+      // `sessions` and raise sessionsLoading first, so every project/worktree/tab
+      // switch flashed the skeleton even though we had rows to show.
+      void get().refreshSessionsInPlace(id);
+      return;
     }
 
-    // Always fetch fresh data (background refresh when cached)
+    set({
+      selectedProjectId: id,
+      sidebarCollapsed: false,
+      ...getSessionResetState(),
+    });
+
+    // Cold start — no cached rows, so the loading state is the honest thing to show.
     void get().fetchSessionsInitial(id);
   },
 });

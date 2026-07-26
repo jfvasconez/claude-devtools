@@ -28,8 +28,8 @@ import {
   COLOR_SURFACE_RAISED,
   COLOR_TEXT_MUTED,
 } from '@renderer/constants/cssVariables';
-import { getTerminalVisual, type TerminalStateInfo } from '@renderer/constants/sessionStatus';
-import { useUsage, type UsageWindow } from '@renderer/hooks/useUsage';
+import { useSessionLiveState } from '@renderer/hooks/useSessionLiveState';
+import { type UsageWindow, useUsage } from '@renderer/hooks/useUsage';
 import { useStore } from '@renderer/store';
 import { friendlyModelLabel, parseModelString } from '@shared/utils/modelParser';
 import { useShallow } from 'zustand/react/shallow';
@@ -75,9 +75,10 @@ const CONTEXT_WINDOW_TOKENS_1M = 1_000_000;
  * returning both the parsed info and the raw id (needed to detect the 1M
  * context marker, which `parseModelString` drops).
  */
-function useSessionModel(
-  messages: ReadonlyArray<{ type: string; model?: string }> | undefined
-): { info: ModelInfo | null; raw: string | null } {
+function useSessionModel(messages: readonly { type: string; model?: string }[] | undefined): {
+  info: ModelInfo | null;
+  raw: string | null;
+} {
   return useMemo(() => {
     if (!messages) return { info: null, raw: null };
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -183,15 +184,16 @@ export const StatusBar = ({ tabId }: Readonly<StatusBarProps>): React.JSX.Elemen
   const { info: model, raw: rawModel } = useSessionModel(sessionDetail?.messages);
   const usage = useUsage();
 
+  // Live status: TRUE terminal state (wezterm hook), colored only when live.
+  // Sourced from the shared hook rather than sessionDetail directly — the detail
+  // refresh short-circuits on an unchanged JSONL fingerprint, so a terminal-state
+  // write alone never updated it and this bar was permanently stuck on "Idle".
+  const { visual: liveVisual } = useSessionLiveState(tabId);
+
   // No session loaded → render nothing (cleaner than an empty muted bar).
   if (!sessionDetail) return null;
 
   const { session } = sessionDetail;
-
-  // Live status: TRUE terminal state (wezterm hook), colored only when live.
-  const liveVisual = getTerminalVisual(
-    (session as { terminalState?: TerminalStateInfo }).terminalState
-  );
 
   const snapshot = (session as { statusline?: StatuslineSnapshot }).statusline;
 

@@ -7,6 +7,7 @@ import { createLogger } from '@shared/utils/logger';
 
 import type { AppState } from '../types';
 import type { Session, SessionSortMode } from '@renderer/types/data';
+import type { TerminalStateChangeEvent } from '@shared/types';
 import type { StateCreator } from 'zustand';
 
 const logger = createLogger('Store:session');
@@ -52,6 +53,12 @@ export interface SessionSlice {
   clearSelection: () => void;
   /** Refresh sessions list without loading states - for real-time updates */
   refreshSessionsInPlace: (projectId: string) => Promise<void>;
+  /**
+   * Patch a session's live terminal state in place (wezterm hook), with no
+   * refetch. Updates the sidebar list and every tab whose session detail shows
+   * that session, so the chat pane's live indicator tracks the terminal.
+   */
+  applyTerminalStateChange: (event: TerminalStateChangeEvent) => void;
   /** Toggle pin/unpin for a session */
   togglePinSession: (sessionId: string) => Promise<void>;
   /** Load pinned sessions from config for current project */
@@ -282,24 +289,129 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         return;
       }
 
-      // Update sessions without loading state
-      set({
-        sessions: result.sessions,
-        sessionsCursor: result.nextCursor,
-        sessionsHasMore: result.hasMore,
-        sessionsTotalCount: result.totalCount,
+      let mergedSessions: Session[] = [];
+      set((prevState) => {
+        // A transient scan failure surfaces as an empty page (ProjectScanner's
+        // listSessionsPaginated catch). Never let that blank a populated list —
+        // it renders as a bogus "No sessions found" empty state.
+        if (result.sessions.length === 0 && prevState.sessions.length > 0) {
+          mergedSessions = prevState.sessions;
+          return {};
+        }
+
+        // MERGE, don't replace. This only refetches page 1, so replacing wholesale
+        // truncated the list back to 20 whenever the user had scrolled further —
+        // rows vanished, the "load more" row reappeared, the virtualizer auto-paged,
+        // and the next file event did it all again. That loop is the sidebar jank.
+        const fresh = new Map(result.sessions.map((s) => [s.id, s]));
+        const updated = prevState.sessions.map((s) => fresh.get(s.id) ?? s);
+        const known = new Set(prevState.sessions.map((s) => s.id));
+        const added = result.sessions.filter((s) => !known.has(s.id));
+        mergedSessions = added.length > 0 ? [...added, ...updated] : updated;
+
+        // Only page 1 is loaded → adopt the fresh cursor. Deeper pages are loaded →
+        // keep ours; the page-1 cursor would rewind pagination and re-arm the
+        // "load more" row we just scrolled past.
+        const onlyFirstPageLoaded = prevState.sessions.length <= result.sessions.length;
+
+        return {
+          sessions: mergedSessions,
+          sessionsCursor: onlyFirstPageLoaded ? result.nextCursor : prevState.sessionsCursor,
+          sessionsHasMore: onlyFirstPageLoaded ? result.hasMore : prevState.sessionsHasMore,
+          // Monotonic, mirroring fetchSessionsMore — a page-1 count must never
+          // shrink a total established by deeper pages.
+          sessionsTotalCount: Math.max(
+            prevState.sessionsTotalCount,
+            result.totalCount,
+            mergedSessions.length
+          ),
+        };
       });
 
+      const latest = get();
       get()._sessionCache.set(projectId, {
-        sessions: result.sessions,
-        cursor: result.nextCursor,
-        hasMore: result.hasMore,
-        totalCount: result.totalCount,
+        sessions: mergedSessions,
+        cursor: latest.sessionsCursor,
+        hasMore: latest.sessionsHasMore,
+        totalCount: latest.sessionsTotalCount,
         timestamp: Date.now(),
       });
+
+      // Pinned/hidden rows can live outside page 1; without this they were dropped
+      // on every refresh since only fetchSessionsInitial re-loaded them.
+      void get().loadPinnedSessions();
+      void get().loadHiddenSessions();
     } catch (error) {
       logger.error('refreshSessionsInPlace error:', error);
     }
+  },
+
+  // Patch live terminal state in place — no refetch. See TerminalStateChangeEvent.
+  applyTerminalStateChange: (event: TerminalStateChangeEvent) => {
+    const { sessionId } = event;
+
+    // Bail before touching the store when nothing here shows this session. These
+    // fire on every prompt submit and tool call across ALL sessions, and any set()
+    // re-runs every selector in the app.
+    const snapshot = get();
+    const known =
+      snapshot.sessions.some((s) => s.id === sessionId) ||
+      snapshot.sessionDetail?.session?.id === sessionId ||
+      Object.values(snapshot.tabSessionData).some(
+        (d) => d?.sessionDetail?.session?.id === sessionId
+      );
+    if (!known) {
+      return;
+    }
+
+    set((state) => {
+      const { state: terminalState } = event;
+
+      const sessionIndex = state.sessions.findIndex((s) => s.id === sessionId);
+      const sessions =
+        sessionIndex === -1
+          ? state.sessions
+          : state.sessions.map((s, i) => (i === sessionIndex ? { ...s, terminalState } : s));
+
+      // Patch every tab showing this session. The chat pane can't get this from a
+      // refresh: getSessionDetail short-circuits on an unchanged JSONL fingerprint,
+      // so terminalState there was frozen at load time.
+      let tabSessionDataChanged = false;
+      const tabSessionData: typeof state.tabSessionData = {};
+      for (const [tabId, data] of Object.entries(state.tabSessionData)) {
+        if (data?.sessionDetail?.session?.id === sessionId) {
+          tabSessionDataChanged = true;
+          tabSessionData[tabId] = {
+            ...data,
+            sessionDetail: {
+              ...data.sessionDetail,
+              session: { ...data.sessionDetail.session, terminalState },
+            },
+          };
+        } else {
+          tabSessionData[tabId] = data;
+        }
+      }
+
+      const globalDetail = state.sessionDetail;
+      const sessionDetail =
+        globalDetail?.session?.id === sessionId
+          ? {
+              ...globalDetail,
+              session: { ...globalDetail.session, terminalState },
+            }
+          : globalDetail;
+
+      if (sessionIndex === -1 && !tabSessionDataChanged && sessionDetail === globalDetail) {
+        return {};
+      }
+
+      return {
+        sessions,
+        sessionDetail,
+        ...(tabSessionDataChanged ? { tabSessionData } : {}),
+      };
+    });
   },
 
   // Toggle pin/unpin for a session (optimistic update)

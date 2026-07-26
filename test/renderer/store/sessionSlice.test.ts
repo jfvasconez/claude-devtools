@@ -270,6 +270,157 @@ describe('sessionSlice', () => {
       await Promise.all([first, second]);
       expect(store.getState().sessions[0]?.id).toBe('newest');
     });
+
+    // The refresh only refetches page 1. Replacing the list wholesale truncated it
+    // back to 20 whenever deeper pages had been loaded, which re-armed the "load
+    // more" row and made the sidebar page itself in and out on a loop.
+    it('should merge page 1 without truncating deeper loaded pages', async () => {
+      const loaded = Array.from({ length: 45 }, (_, i) => ({ id: `session-${i}` }));
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: loaded as never[],
+        sessionsCursor: 'deep-cursor',
+        sessionsHasMore: true,
+        sessionsTotalCount: 45,
+      });
+
+      // Page 1 comes back with one brand-new session at the head.
+      mockAPI.getSessionsPaginated.mockResolvedValue({
+        sessions: [{ id: 'brand-new' }, ...loaded.slice(0, 19)] as never[],
+        nextCursor: 'page-1-cursor',
+        hasMore: true,
+        totalCount: 20,
+      });
+
+      await store.getState().refreshSessionsInPlace('project-1');
+
+      const state = store.getState();
+      expect(state.sessions).toHaveLength(46);
+      expect(state.sessions[0]?.id).toBe('brand-new');
+      expect(state.sessions.some((s) => s.id === 'session-44')).toBe(true);
+      // Pagination must not rewind to the page-1 cursor.
+      expect(state.sessionsCursor).toBe('deep-cursor');
+      expect(state.sessionsTotalCount).toBe(46);
+    });
+
+    it('should adopt the fresh cursor when only page 1 is loaded', async () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: [{ id: 'a' }] as never[],
+        sessionsCursor: 'old-cursor',
+        sessionsHasMore: false,
+      });
+
+      mockAPI.getSessionsPaginated.mockResolvedValue({
+        sessions: [{ id: 'a' }, { id: 'b' }] as never[],
+        nextCursor: 'fresh-cursor',
+        hasMore: true,
+        totalCount: 2,
+      });
+
+      await store.getState().refreshSessionsInPlace('project-1');
+
+      expect(store.getState().sessionsCursor).toBe('fresh-cursor');
+      expect(store.getState().sessionsHasMore).toBe(true);
+    });
+
+    // A transient scan failure surfaces as an empty page; blanking the list on that
+    // renders a bogus "No sessions found" empty state.
+    it('should not blank a populated list when the refresh returns nothing', async () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: [{ id: 'session-1' }, { id: 'session-2' }] as never[],
+      });
+
+      mockAPI.getSessionsPaginated.mockResolvedValue({
+        sessions: [] as never[],
+        nextCursor: null,
+        hasMore: false,
+        totalCount: 0,
+      });
+
+      await store.getState().refreshSessionsInPlace('project-1');
+
+      expect(store.getState().sessions).toHaveLength(2);
+    });
+
+    it('should update changed session metadata in place', async () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        sessions: [{ id: 'session-1', messageCount: 3 }] as never[],
+      });
+
+      mockAPI.getSessionsPaginated.mockResolvedValue({
+        sessions: [{ id: 'session-1', messageCount: 9 }] as never[],
+        nextCursor: null,
+        hasMore: false,
+        totalCount: 1,
+      });
+
+      await store.getState().refreshSessionsInPlace('project-1');
+
+      expect(store.getState().sessions).toHaveLength(1);
+      expect((store.getState().sessions[0] as { messageCount?: number }).messageCount).toBe(9);
+    });
+  });
+
+  describe('applyTerminalStateChange', () => {
+    const working = { state: 'working', ts: 1_700_000_000 };
+
+    it('should patch the sidebar session without any refetch', () => {
+      store.setState({
+        sessions: [{ id: 'session-1' }, { id: 'session-2' }] as never[],
+      });
+
+      store.getState().applyTerminalStateChange({ sessionId: 'session-2', state: working });
+
+      const sessions = store.getState().sessions as { id: string; terminalState?: unknown }[];
+      expect(sessions[1]?.terminalState).toEqual(working);
+      expect(sessions[0]?.terminalState).toBeUndefined();
+      expect(mockAPI.getSessionsPaginated).not.toHaveBeenCalled();
+      expect(mockAPI.getSessionDetail).not.toHaveBeenCalled();
+    });
+
+    // getSessionDetail short-circuits on an unchanged JSONL fingerprint, so a
+    // terminal-state write can only reach the chat pane by being patched directly.
+    it('should patch every tab whose detail shows that session', () => {
+      store.setState({
+        sessions: [] as never[],
+        tabSessionData: {
+          'tab-a': { sessionDetail: { session: { id: 'session-1' } } },
+          'tab-b': { sessionDetail: { session: { id: 'other' } } },
+        } as never,
+      });
+
+      store.getState().applyTerminalStateChange({ sessionId: 'session-1', state: working });
+
+      const data = store.getState().tabSessionData as Record<
+        string,
+        { sessionDetail: { session: { terminalState?: unknown } } }
+      >;
+      expect(data['tab-a'].sessionDetail.session.terminalState).toEqual(working);
+      expect(data['tab-b'].sessionDetail.session.terminalState).toBeUndefined();
+    });
+
+    it('should clear state when the file is removed', () => {
+      store.setState({
+        sessions: [{ id: 'session-1', terminalState: working }] as never[],
+      });
+
+      store.getState().applyTerminalStateChange({ sessionId: 'session-1' });
+
+      const sessions = store.getState().sessions as { terminalState?: unknown }[];
+      expect(sessions[0]?.terminalState).toBeUndefined();
+    });
+
+    it('should be a no-op for an unknown session', () => {
+      const before = [{ id: 'session-1' }] as never[];
+      store.setState({ sessions: before });
+
+      store.getState().applyTerminalStateChange({ sessionId: 'nope', state: working });
+
+      expect(store.getState().sessions).toBe(before);
+    });
   });
 
   describe('fetchSessionDetail', () => {
